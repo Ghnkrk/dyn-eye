@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environment
+.venv/
+venv/
+
+# Data (tracked by DVC)
+data/
+!data/.gitkeep
+
+# Model artifacts
+models/*.pt
+models/versions/
+
+# Logs
+logs/
+
+# Training runs
+runs/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# DVC
+*.dvc
+/dvc.lock
+
+# MLflow
+mlruns/
+
+# Environment
+.env
+
+# Docker Local Overrides
+docker-compose.override.yml
+.docker/
+
+# Local database and sync locks
+*.sqlite3
+*.sqlite3-journal
+.webassets-cache/

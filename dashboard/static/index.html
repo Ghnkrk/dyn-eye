@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="DYN-EYE — Autonomous Anomaly Discovery and Self-Learning Detection Pipeline">
+    <title>DYN-EYE — Defect Discovery</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔬</text></svg>">
+</head>
+<body>
+<div class="app" id="app">
+
+    <!-- ═══ HEADER ═══ -->
+    <header class="header">
+        <div class="brand">
+            <div class="brand-icon">🔬</div>
+            <div>
+                <div class="brand-name">DYN-EYE</div>
+                <div class="brand-sub">Autonomous Anomaly Detection & Self-Learning Pipeline</div>
+            </div>
+        </div>
+        <div class="header-actions">
+            <div class="status-pill status-pill--idle" id="global-pill">
+                <span class="status-dot"></span>
+                <span id="global-text">Idle</span>
+            </div>
+            <a href="http://localhost:8080" target="_blank" class="btn btn--outline btn--sm">
+                Label Studio
+            </a>
+            <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme" id="theme-btn">🌙</button>
+        </div>
+    </header>
+
+    <!-- ═══ STATS ═══ -->
+    <div class="grid grid--4 mb-md">
+        <div class="card">
+            <div class="stat">
+                <div class="stat-value" id="s-images">—</div>
+                <div class="stat-label">Input Images</div>
+            </div>
+        </div>
+        <div class="card">
+            <div class="stat">
+                <div class="stat-value" id="s-clusters">—</div>
+                <div class="stat-label">Clusters Found</div>
+            </div>
+        </div>
+        <div class="card">
+            <div class="stat">
+                <div class="stat-value" id="s-models">—</div>
+                <div class="stat-label">Model Versions</div>
+            </div>
+        </div>
+        <div class="card">
+            <div class="stat">
+                <div class="stat-value" id="s-runs">—</div>
+                <div class="stat-label">Pipeline Runs</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══ MAIN GRID: Pipeline + Logs ═══ -->
+    <div class="main-grid">
+
+        <!-- LEFT PANEL: Pipeline Control + Flow -->
+        <div>
+            <!-- Trigger Bar -->
+            <div class="card mb-md">
+                <div class="card-header">
+                    <div class="card-title">Pipeline Control</div>
+                    <div class="status-pill" id="discovery-pill">
+                        <span class="status-dot"></span>
+                        <span id="disc-status-text">Idle</span>
+                    </div>
+                </div>
+
+                <div class="input-row mb-md">
+                    <div class="input-group">
+                        <label>Known Defects (Auto-sync)</label>
+                        <div id="cfg-known-defects" class="text-mono text-sm mt-sm" style="color:var(--text-secondary)">Loading...</div>
+                    </div>
+                    <div class="input-group" style="max-width:100px">
+                        <label>Sample Run</label>
+                        <div class="mt-sm">
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="in-sample-run">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="input-group" style="max-width:100px">
+                        <label>Confidence</label>
+                        <input type="number" id="in-conf" value="0.25" min="0" max="1" step="0.05">
+                    </div>
+                </div>
+
+                <div class="flex gap-sm" style="flex-wrap: wrap;">
+                    <button class="btn btn--primary" id="btn-discover" onclick="triggerDiscovery()">
+                        ▶ Run Discovery
+                    </button>
+                    <button class="btn btn--outline btn--sm" onclick="setupFAISS()">
+                        Setup FAISS
+                    </button>
+                    <button class="btn btn--outline btn--sm" id="btn-orch" onclick="toggleOrchestrator()">
+                        🤖 Start Orchestrator
+                    </button>
+                    <button class="btn btn--success" id="btn-retrain" onclick="triggerRetraining()" style="margin-left: auto;">
+                        🚀 Train YOLO Model
+                    </button>
+                </div>
+            </div>
+
+            <!-- Pipeline Flow -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">Discovery Pipeline</div>
+                </div>
+                <div class="pipeline-flow" id="pipe-flow">
+                    <div class="pipe-node" id="pn-yolo_inference">
+                        <div class="pipe-idx">1</div>
+                        <div>
+                            <div class="pipe-name">YOLO Inference</div>
+                            <div class="pipe-detail" id="pd-yolo_inference">Filter known vs unknown</div>
+                        </div>
+                        <div class="pipe-right"><span class="pipe-latency" id="pl-yolo_inference">—</span></div>
+                    </div>
+                    <div class="pipe-connector"></div>
+
+                    <div class="pipe-node" id="pn-vlm_annotation">
+                        <div class="pipe-idx">2</div>
+                        <div>
+                            <div class="pipe-name">VLM Annotation</div>
+                            <div class="pipe-detail" id="pd-vlm_annotation">Sequential bbox detection</div>
+                        </div>
+                        <div class="pipe-right"><span class="pipe-latency" id="pl-vlm_annotation">—</span></div>
+                    </div>
+                    <div class="pipe-connector"></div>
+
+                    <div class="pipe-node" id="pn-crop_extraction">
+                        <div class="pipe-idx">3</div>
+                        <div>
+                            <div class="pipe-name">Crop Extraction</div>
+                            <div class="pipe-detail" id="pd-crop_extraction">Extract defect patches</div>
+                        </div>
+                        <div class="pipe-right"><span class="pipe-latency" id="pl-crop_extraction">—</span></div>
+                    </div>
+                    <div class="pipe-connector"></div>
+
+                    <div class="pipe-node" id="pn-feature_extraction">
+                        <div class="pipe-idx">4</div>
+                        <div>
+                            <div class="pipe-name">DINOv2 Features</div>
+                            <div class="pipe-detail" id="pd-feature_extraction">384-d embeddings</div>
+                        </div>
+                        <div class="pipe-right"><span class="pipe-latency" id="pl-feature_extraction">—</span></div>
+                    </div>
+                    <div class="pipe-connector"></div>
+
+                    <div class="pipe-node" id="pn-faiss_search">
+                        <div class="pipe-idx">5</div>
+                        <div>
+                            <div class="pipe-name">FAISS Search</div>
+                            <div class="pipe-detail" id="pd-faiss_search">Novelty detection</div>
+                        </div>
+                        <div class="pipe-right"><span class="pipe-latency" id="pl-faiss_search">—</span></div>
+                    </div>
+                    <div class="pipe-connector"></div>
+
+                    <div class="pipe-node" id="pn-hdbscan_cluster">
+                        <div class="pipe-idx">6</div>
+                        <div>
+                            <div class="pipe-name">HDBSCAN Clustering</div>
+                            <div class="pipe-detail" id="pd-hdbscan_cluster">Group unknowns</div>
+                        </div>
+                        <div class="pipe-right"><span class="pipe-latency" id="pl-hdbscan_cluster">—</span></div>
+                    </div>
+                    <div class="pipe-connector"></div>
+
+                    <div class="pipe-node" id="pn-label_studio_sync">
+                        <div class="pipe-idx">7</div>
+                        <div>
+                            <div class="pipe-name">Label Studio Sync</div>
+                            <div class="pipe-detail" id="pd-label_studio_sync">Upload for naming</div>
+                        </div>
+                        <div class="pipe-right"><span class="pipe-latency" id="pl-label_studio_sync">—</span></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Clusters Section -->
+            <div class="section">
+                <div class="section-title">Discovered Clusters</div>
+                <div class="grid grid--3" id="clusters-grid">
+                    <div class="empty" style="grid-column:1/-1">
+                        <div class="empty-icon">🔬</div>
+                        <div>Run the pipeline to discover clusters</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- RIGHT PANEL: Live Log Stream -->
+        <div class="log-viewer" id="log-viewer">
+            <div class="log-header">
+                <div class="log-title">
+                    <div class="log-live-dot" id="log-dot"></div>
+                    Live Pipeline Logs
+                </div>
+                <button class="btn btn--outline btn--sm" onclick="clearLogs()">Clear</button>
+            </div>
+            <div class="log-body" id="log-body">
+                <div class="log-line">
+                    <span class="log-ts">--:--:--</span>
+                    <span class="log-src">system</span>
+                    <span class="log-msg">Waiting for pipeline events...</span>
+                </div>
+            </div>
+        </div>
+
+    </div><!-- /main-grid -->
+
+</div><!-- /app -->
+
+<!-- Cluster Editor Modal -->
+<div class="modal" id="cluster-modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3 class="modal-title" id="cluster-modal-title">Edit Discovered Cluster</h3>
+            <button class="modal-close" onclick="closeClusterModal()">&times;</button>
+        </div>
+        <div class="modal-body" id="cluster-modal-body">
+            <!-- Dynamic grid of crop cards with actions -->
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn--outline" onclick="closeClusterModal()">Done</button>
+        </div>
+    </div>
+</div>
+
+<div class="toast-wrap" id="toast-wrap"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
