@@ -3,6 +3,8 @@ Node 3 — Crop Extraction
 
 Uses VLM bounding-box annotations to crop defect regions from
 original images and saves them to data/crops/.
+
+In cache mode, skips extraction and returns existing crop files.
 """
 from __future__ import annotations
 
@@ -12,7 +14,7 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
 import config as cfg
-from src.utils import get_logger
+from src.utils import get_logger, list_images
 
 log = get_logger("crop_extraction")
 
@@ -23,14 +25,69 @@ def crop_extraction_node(state: dict) -> dict:
 
     Reads:
         state["vlm_annotations"]
+        state["use_cache"]
 
     Writes:
         state["crop_paths"]
         state["crop_metadata"]
     """
-    annotations = state.get("vlm_annotations", [])
     crops_dir = cfg.CROPS_DIR
     crops_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Cache mode: return existing crops from disk ──────────
+    if state.get("use_cache"):
+        existing_crops = list_images(crops_dir)
+        crop_paths = [str(p) for p in existing_crops]
+        log.info(f"Cache mode — reusing {len(crop_paths)} existing crops from {crops_dir}.")
+
+        # Load existing crop-to-source mapping if available to recover metadata
+        crop_to_source = {}
+        mapping_file = cfg.DATA_DIR / "crop_to_source.json"
+        if mapping_file.exists():
+            try:
+                import json
+                with open(mapping_file, "r") as f:
+                    crop_to_source = json.load(f)
+            except Exception as e:
+                log.warning(f"Failed to load crop_to_source mapping in cache mode: {e}")
+
+        crop_metadata = []
+        for cp in crop_paths:
+            crop_name = Path(cp).stem
+            source_info = crop_to_source.get(crop_name, {})
+            source_image = source_info.get("source_image", "")
+            
+            # Reconstruct pixel/raw boxes if possible
+            bbox_norm = source_info.get("bbox_normalized", [])
+            box_2d_raw = []
+            if len(bbox_norm) == 4:
+                x_center, y_center, w_norm, h_norm = bbox_norm
+                xmin = x_center - w_norm / 2
+                ymin = y_center - h_norm / 2
+                xmax = x_center + w_norm / 2
+                ymax = y_center + h_norm / 2
+                box_2d_raw = [int(ymin * 1000), int(xmin * 1000), int(ymax * 1000), int(xmax * 1000)]
+                
+            crop_metadata.append({
+                "crop_path": cp,
+                "source_image": source_image,
+                "source_image_name": Path(source_image).name if source_image else "",
+                "finding_index": 0,
+                "box_2d_raw": box_2d_raw,
+                "box_2d_pixels": [],
+                "physical_traits": "",
+                "crop_width": 0,
+                "crop_height": 0,
+            })
+
+        return {
+            "crop_paths": crop_paths,
+            "crop_metadata": crop_metadata,
+            "_cached": True,
+        }
+
+    # ── Normal mode: extract crops from VLM annotations ──────
+    annotations = state.get("vlm_annotations", [])
 
     crop_paths: list[str] = []
     crop_metadata: list[dict] = []

@@ -8,14 +8,14 @@ Quick-start commands:
     # Run dashboard
     python -m dashboard.app
 
-    # Run Label Studio ML backend
-    python -m src.label_studio._wsgi
-
     # Setup FAISS index
     python main.py setup-faiss
 
     # Full pipeline
     python main.py discover
+
+    # Fast demo pipeline (reuse cached crops)
+    python main.py discover --use-cache
 """
 import sys
 import argparse
@@ -34,21 +34,20 @@ Commands:
   discover      Run the full discovery pipeline
   retrain       Run the retraining pipeline
   setup-faiss   Build FAISS index from known defect crops
-  ml-backend    Start the Label Studio ML backend (port 9090)
         """,
     )
     parser.add_argument(
         "command",
-        choices=["dashboard", "discover", "retrain", "setup-faiss", "ml-backend"],
+        choices=["dashboard", "discover", "retrain", "setup-faiss"],
         help="Command to run",
     )
     parser.add_argument("--images-dir", default=None, help="Input images directory")
-    parser.add_argument("--confidence", type=float, default=None)
     parser.add_argument("--model", default=None, help="YOLO model path")
     parser.add_argument("--project-id", type=int, default=None, help="Label Studio project ID")
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--port", type=int, default=None)
-    parser.add_argument("--from-vlm-cache", action="store_true", help="Bypass YOLO/VLM steps and run from cached VLM output")
+    parser.add_argument("--use-cache", action="store_true",
+                        help="Skip YOLO/VLM and reuse cached crops (fast demo mode)")
 
     args = parser.parse_args()
 
@@ -69,11 +68,12 @@ Commands:
         from src.features.known_defects_registry import get_known_defect_names
         known = get_known_defect_names()
         print(f"[Registry] Known defect classes: {known or '(none yet — all treated as unknown)'}")
+        if args.use_cache:
+            print("[Cache] Using cached crops — skipping YOLO/VLM/Crop steps.")
         result = run_discovery_pipeline(
             input_images_dir=args.images_dir,
-            confidence_threshold=args.confidence,
             yolo_model_path=args.model,
-            from_vlm_cache=args.from_vlm_cache,
+            use_cache=args.use_cache,
         )
         print(f"\n[OK] Pipeline complete. Run ID: {result.get('run_id')}")
         print(f"   Unknown images: {len(result.get('unknown_image_paths', []))}")
@@ -81,9 +81,6 @@ Commands:
         print(f"   Clusters: {result.get('num_clusters', 0)}")
 
     elif args.command == "retrain":
-        if not args.project_id:
-            print("[ERROR] --project-id is required for retraining")
-            sys.exit(1)
         from src.retraining.agent import run_retraining_pipeline
         result = run_retraining_pipeline(
             project_id=args.project_id,
@@ -118,18 +115,6 @@ Commands:
             added = register_defects(class_names, source="faiss_setup")
             print(f"[Registry] Registered {len(added)} new defect classes: {added}")
         print(f"[OK] FAISS index built with {count} vectors")
-
-    elif args.command == "ml-backend":
-        from label_studio_ml.api import init_app
-        from src.label_studio.model import VLMBackend
-        import config as cfg
-        port = args.port or cfg.LABEL_STUDIO_ML_BACKEND_PORT
-        print(f"[ML Backend] Starting ML Backend on port {port}")
-        # Dedicated model directory to avoid scanning workspace root
-        ls_model_dir = cfg.MODELS_DIR / "label_studio"
-        ls_model_dir.mkdir(parents=True, exist_ok=True)
-        app = init_app(model_class=VLMBackend, model_dir=str(ls_model_dir))
-        app.run(host="0.0.0.0", port=port, debug=True)
 
 
 if __name__ == "__main__":

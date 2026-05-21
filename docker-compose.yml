@@ -1,20 +1,6 @@
 version: '3.8'
 
 services:
-  label-studio:
-    image: heartexlabs/label-studio:latest
-    ports:
-      - "8080:8080"
-    volumes:
-      - label_studio_data:/label-studio/data
-    environment:
-      - LABEL_STUDIO_USERNAME=admin@dyneye.com
-      - LABEL_STUDIO_PASSWORD=AdminPassword123!
-      - LABEL_STUDIO_DISABLE_SIGNUP_WITHOUT_LINK=true
-    networks:
-      - dyneye-net
-    restart: unless-stopped
-
   dashboard:
     build:
       context: .
@@ -23,9 +9,6 @@ services:
       - "8501:8501"
     environment:
       - PORT=8501
-      - LABEL_STUDIO_URL=http://label-studio:8080
-    depends_on:
-      - label-studio
     volumes:
       - ./data:/app/data
       - ./models:/app/models
@@ -33,28 +16,6 @@ services:
       - dyneye-net
     command: python main.py dashboard
     restart: unless-stopped
-
-  ml-backend:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    ports:
-      - "9090:9090"
-    environment:
-      - PORT=9090
-      - LABEL_STUDIO_URL=http://label-studio:8080
-    depends_on:
-      - label-studio
-    volumes:
-      - ./data:/app/data
-      - ./models:/app/models
-    networks:
-      - dyneye-net
-    command: python main.py ml-backend
-    restart: unless-stopped
-
-volumes:
-  label_studio_data:
 
 networks:
   dyneye-net:

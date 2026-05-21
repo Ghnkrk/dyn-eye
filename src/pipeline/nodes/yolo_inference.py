@@ -28,7 +28,7 @@ def yolo_inference_node(state: dict) -> dict:
 
     Reads:
         state["input_images_dir"]
-        state["confidence_threshold"]
+        state["use_cache"]
 
     Writes:
         state["all_image_paths"]
@@ -41,11 +41,15 @@ def yolo_inference_node(state: dict) -> dict:
     # Always hot-read from the registry — picks up newly deployed classes
     known_names = get_known_defect_names()
 
-    # Cache skip logic
-    if "vlm_annotations" in state:
-        log.info("VLM annotations cache detected in state. Skipping YOLO inference and using cached paths.")
-        # Reconstruct unknown_image_paths from vlm_annotations
-        unknown_paths = list({ann["image_path"] for ann in state["vlm_annotations"] if "image_path" in ann})
+    # ── Cache mode: skip YOLO entirely ───────────────────────
+    if state.get("use_cache"):
+        log.info("Cache mode — skipping YOLO inference (reusing existing crops).")
+        # Reconstruct unknown_image_paths from cached VLM annotations if available
+        vlm_annotations = state.get("vlm_annotations", [])
+        unknown_paths = list({
+            ann["image_path"] for ann in vlm_annotations
+            if "image_path" in ann
+        })
         return {
             "all_image_paths": unknown_paths,
             "known_image_paths": [],
@@ -53,10 +57,12 @@ def yolo_inference_node(state: dict) -> dict:
             "unknown_defects_json": str(cfg.UNKNOWN_DEFECTS_JSON),
             "yolo_raw_results": [],
             "known_defect_names": known_names,
+            "_cached": True,
         }
 
+    # ── Normal mode: full YOLO inference ─────────────────────
     images_dir = Path(state.get("input_images_dir", str(cfg.INPUT_IMAGES_DIR)))
-    conf_thresh = state.get("confidence_threshold", cfg.YOLO_CONFIDENCE_THRESHOLD)
+    conf_thresh = cfg.YOLO_CONFIDENCE_THRESHOLD
     known_names_lower = {n.lower() for n in known_names}
 
     model_path = state.get("yolo_model_path", str(cfg.YOLO_MODEL_PATH))

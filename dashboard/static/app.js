@@ -1,10 +1,12 @@
 /**
- * DYN-EYE Dashboard — Frontend v2
+ * DYN-EYE Dashboard — Frontend v3
  *
  * Features:
  *  - SSE-based real-time log streaming (no polling!)
  *  - Light/Dark theme toggle with persistence
  *  - Pipeline status tracking from live logs
+ *  - Cache mode toggle for fast demo runs
+ *  - In-dashboard cluster editing (no Label Studio needed)
  *  - Fully autonomous — minimal user interaction
  */
 
@@ -59,11 +61,14 @@ async function post(path, body = {}) {
 // ── SSE Log Stream ──────────────────────────────────────────
 let eventSource = null;
 let logAutoScroll = true;
+let lastLogTs = null;
+let hasDiscoveryRunThisSession = false;
 
 function startLogStream() {
     if (eventSource) eventSource.close();
 
-    eventSource = new EventSource('/api/logs/stream');
+    const url = lastLogTs ? `/api/logs/stream?after_ts=${encodeURIComponent(lastLogTs)}` : '/api/logs/stream';
+    eventSource = new EventSource(url);
     eventSource.onmessage = (e) => {
         const evt = JSON.parse(e.data);
         appendLog(evt);
@@ -82,6 +87,9 @@ function startLogStream() {
 }
 
 function appendLog(evt) {
+    if (!lastLogTs || evt.ts > lastLogTs) {
+        lastLogTs = evt.ts;
+    }
     const body = document.getElementById('log-body');
     const line = document.createElement('div');
     line.className = `log-line log-line--${evt.level}`;
@@ -129,6 +137,8 @@ const NODE_NAMES = [
     'label_studio_sync',
 ];
 
+let pipelineRunning = false;
+
 function updatePipelineFromLog(evt) {
     const source = evt.source;
 
@@ -136,14 +146,19 @@ function updatePipelineFromLog(evt) {
     if (evt.message.includes('pipeline triggered') || evt.message.includes('pipeline started')) {
         setGlobalStatus('running', 'Running');
         setDiscoveryStatus('running', 'Running');
+        pipelineRunning = true;
+        hasDiscoveryRunThisSession = true;
         // Reset all nodes
         NODE_NAMES.forEach(n => setNodeState(n, ''));
+        // Clear cluster display immediately to prevent showing stale data
+        clearClusters();
     }
 
     if (evt.message.includes('pipeline finished') || evt.message.includes('pipeline complete')) {
         setGlobalStatus('complete', 'Complete');
         setDiscoveryStatus('complete', 'Complete');
         document.getElementById('btn-discover').disabled = false;
+        pipelineRunning = false;
         loadStats();
     }
 
@@ -151,6 +166,7 @@ function updatePipelineFromLog(evt) {
         setGlobalStatus('failed', 'Failed');
         setDiscoveryStatus('failed', 'Failed');
         document.getElementById('btn-discover').disabled = false;
+        pipelineRunning = false;
     }
 
     // Update individual nodes
@@ -160,8 +176,11 @@ function updatePipelineFromLog(evt) {
         }
         if (evt.level === 'info' && evt.message.includes('complete')) {
             setNodeState(source, 'done');
-            // Extract items from data
-            if (evt.data && evt.data.items_processed !== undefined) {
+            // Show cached indicator
+            if (evt.data && evt.data.cached) {
+                const detail = document.getElementById(`pd-${source}`);
+                if (detail) detail.textContent = `${evt.data.items_processed} items (cached)`;
+            } else if (evt.data && evt.data.items_processed !== undefined) {
                 const detail = document.getElementById(`pd-${source}`);
                 if (detail) detail.textContent = `${evt.data.items_processed} items`;
             }
@@ -196,15 +215,16 @@ async function triggerDiscovery() {
     const btn = document.getElementById('btn-discover');
     btn.disabled = true;
 
-    const conf = parseFloat(document.getElementById('in-conf').value) || null;
     const useSampleRun = document.getElementById('in-sample-run').checked;
+    const useCache = document.getElementById('in-use-cache').checked;
 
     try {
+        hasDiscoveryRunThisSession = true;
         await post('/api/discovery/trigger', {
-            confidence_threshold: conf,
             use_sample_run: useSampleRun,
+            use_cache: useCache,
         });
-        toast('Discovery pipeline started', 'success');
+        toast(`Discovery pipeline started${useCache ? ' (cache mode)' : ''}`, 'success');
     } catch (e) {
         toast(`Failed: ${e.message}`, 'error');
         btn.disabled = false;
@@ -264,11 +284,26 @@ async function loadStats() {
         const known = cfg.known_defect_names || [];
         document.getElementById('cfg-known-defects').textContent = known.length ? known.join(', ') : 'None';
 
-        // Render clusters
-        renderClusters(clusters.clusters || []);
+        // Only render clusters if pipeline isn't running and discovery has run in this session
+        if (!clusters.pipeline_running) {
+            if (hasDiscoveryRunThisSession) {
+                renderClusters(clusters.clusters || []);
+            } else {
+                renderClusters([]);
+            }
+        }
     } catch (e) {
         console.error('Stats load failed:', e);
     }
+}
+
+function clearClusters() {
+    const grid = document.getElementById('clusters-grid');
+    grid.innerHTML = `
+        <div class="empty" style="grid-column:1/-1">
+            <div class="empty-icon">⏳</div>
+            <div>Pipeline running — clusters will appear when ready...</div>
+        </div>`;
 }
 
 function renderClusters(clusters) {
@@ -309,9 +344,6 @@ function renderClusters(clusters) {
         <button class="btn btn--primary" onclick="submitClusterNames()">
             💾 Save Cluster Names
         </button>
-        <button class="btn btn--outline btn--sm" onclick="pullFromLabelStudio()">
-            🔄 Pull from Label Studio
-        </button>
         <span class="cluster-save-status" id="cluster-save-status"></span>
     </div>`;
 
@@ -349,28 +381,6 @@ async function submitClusterNames() {
     }
 }
 
-async function pullFromLabelStudio() {
-    toast('Pulling annotations from Label Studio...', 'info');
-    try {
-        const r = await post('/api/clusters/pull-from-ls');
-        const parts = [];
-        if (Object.keys(r.defect_names || {}).length) {
-            parts.push(`${Object.keys(r.defect_names).length} named`);
-        }
-        if (r.reassignments) parts.push(`${r.reassignments} reassigned`);
-        if (r.drops) parts.push(`${r.drops} dropped`);
-        parts.push(`${r.total_labeled_crops} total labeled`);
-
-        toast(`LS sync: ${parts.join(', ')}`, 'success');
-        document.getElementById('cluster-save-status').textContent =
-            `✓ Synced from LS — ${parts.join(', ')}`;
-        document.getElementById('cluster-save-status').style.color = 'var(--success)';
-        loadStats(); // Refresh cluster cards
-    } catch (e) {
-        toast(`LS pull failed: ${e.message}`, 'error');
-    }
-}
-
 // ── Status Polling (lightweight, supplements SSE) ───────────
 async function pollStatus() {
     try {
@@ -387,6 +397,7 @@ async function pollStatus() {
         // Update discovery button
         if (s.discovery) {
             if (s.discovery.status === 'running') {
+                hasDiscoveryRunThisSession = true;
                 document.getElementById('btn-discover').disabled = true;
                 setDiscoveryStatus('running', 'Running');
                 setGlobalStatus('running', 'Running');
@@ -510,6 +521,8 @@ async function runBatchMove(sourceCluster) {
             action: 'move'
         });
         toast(`Successfully moved ${cropFiles.length} crops`, 'success');
+        // Reload stats to refresh cluster data, then reopen modal
+        await loadStats();
         openClusterModal(sourceCluster);
     } catch (e) {
         toast(`Batch move failed: ${e.message}`, 'error');
@@ -533,6 +546,7 @@ async function runBatchDrop(sourceCluster) {
             action: 'drop'
         });
         toast(`Successfully dropped ${cropFiles.length} crops`, 'success');
+        await loadStats();
         openClusterModal(sourceCluster);
     } catch (e) {
         toast(`Batch drop failed: ${e.message}`, 'error');
@@ -556,7 +570,8 @@ async function moveCrop(sourceCluster, cropFile, targetCluster) {
             action: 'move'
         });
         toast('Moved crop successfully', 'success');
-        // Instantly reload modal with source cluster to show it's gone
+        // Reload stats then reopen modal to show it's gone
+        await loadStats();
         openClusterModal(sourceCluster);
     } catch (e) {
         toast(`Move failed: ${e.message}`, 'error');
@@ -576,7 +591,8 @@ async function dropCrop(sourceCluster, cropFile) {
             action: 'drop'
         });
         toast('Dropped crop successfully', 'success');
-        // Instantly reload modal
+        // Reload stats then reopen modal
+        await loadStats();
         openClusterModal(sourceCluster);
     } catch (e) {
         toast(`Drop failed: ${e.message}`, 'error');

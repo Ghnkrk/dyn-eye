@@ -1,11 +1,11 @@
 """
-DYN-EYE Dashboard — FastAPI Backend (v2)
+DYN-EYE Dashboard — FastAPI Backend (v3)
 
 Fully autonomous pipeline dashboard:
   - Real-time log streaming via SSE
   - One-click pipeline trigger (then hands-off)
-  - Autonomous orchestrator background daemon
-  - Cluster monitoring and Label Studio integration
+  - Cache mode for fast demo runs
+  - Cluster monitoring and in-dashboard editing
   - FAISS setup endpoint
 """
 from __future__ import annotations
@@ -35,7 +35,7 @@ log = get_logger("dashboard")
 app = FastAPI(
     title="DYN-EYE — Unknown Defect Discovery",
     description="Autonomous industrial defect discovery pipeline",
-    version="2.0.0",
+    version="3.0.0",
 )
 
 app.add_middleware(
@@ -58,6 +58,7 @@ _pipeline_status: dict[str, Any] = {
     "retraining": {"status": "idle", "run_id": None, "result": None},
     "orchestrator": {"status": "idle"},
 }
+_clusters_ready = True  # False while pipeline is running (prevents stale cluster display)
 _lock = threading.Lock()
 
 
@@ -66,8 +67,8 @@ _lock = threading.Lock()
 class DiscoveryRequest(BaseModel):
     use_sample_run: bool = False
     input_images_dir: str | None = None
-    confidence_threshold: float | None = None
     yolo_model_path: str | None = None
+    use_cache: bool = False
 
 
 class RetrainingRequest(BaseModel):
@@ -90,31 +91,39 @@ class OrchestratorRequest(BaseModel):
 
 def _run_discovery_bg(req: DiscoveryRequest):
     """Run discovery pipeline in background thread."""
+    global _clusters_ready
+
     with _lock:
         _pipeline_status["discovery"]["status"] = "running"
         _pipeline_status["discovery"]["started_at"] = datetime.now().isoformat()
         _pipeline_status["discovery"]["error"] = None
+        _clusters_ready = False  # Hide stale clusters while pipeline runs
 
-    LogStream.emit(f"Discovery pipeline triggered (Sample Run: {req.use_sample_run})", level="step", source="dashboard")
+    LogStream.emit(
+        f"Discovery pipeline triggered (Sample Run: {req.use_sample_run}, Cache: {req.use_cache})",
+        level="step", source="dashboard",
+    )
 
     try:
         from src.pipeline.graph import run_discovery_pipeline
         input_dir = str(cfg.SAMPLE_RUN_DIR) if req.use_sample_run else req.input_images_dir
         result = run_discovery_pipeline(
             input_images_dir=input_dir,
-            confidence_threshold=req.confidence_threshold,
             yolo_model_path=req.yolo_model_path,
+            use_cache=req.use_cache,
         )
         with _lock:
             _pipeline_status["discovery"]["status"] = "complete"
             _pipeline_status["discovery"]["result"] = _sanitize(result)
             _pipeline_status["discovery"]["completed_at"] = datetime.now().isoformat()
+            _clusters_ready = True  # Clusters are now fresh
         LogStream.emit("Discovery pipeline finished successfully", level="info", source="dashboard")
     except Exception as e:
         with _lock:
             _pipeline_status["discovery"]["status"] = "failed"
             _pipeline_status["discovery"]["error"] = str(e)
             _pipeline_status["discovery"]["completed_at"] = datetime.now().isoformat()
+            _clusters_ready = True  # Re-enable cluster display even on failure
         LogStream.emit(f"Discovery pipeline failed: {e}", level="error", source="dashboard")
         log.error(f"Discovery pipeline failed: {e}")
 
@@ -177,10 +186,10 @@ async def root():
 # ── SSE Log Stream ───────────────────────────────────────────
 
 @app.get("/api/logs/stream")
-async def log_stream():
+async def log_stream(after_ts: str | None = None):
     """Server-Sent Events endpoint for real-time log streaming."""
     async def event_generator():
-        last_ts = None
+        last_ts = after_ts
         while True:
             events = LogStream.since(after_ts=last_ts, limit=50)
             for evt in events:
@@ -277,7 +286,9 @@ async def stop_orchestrator():
 async def get_status():
     """Get current pipeline status."""
     with _lock:
-        return JSONResponse(_pipeline_status)
+        status = dict(_pipeline_status)
+        status["clusters_ready"] = _clusters_ready
+        return JSONResponse(status)
 
 
 @app.get("/api/metrics/{run_id}")
@@ -316,9 +327,6 @@ async def get_config():
     """Get current configuration (non-sensitive)."""
     from src.features.known_defects_registry import get_known_defect_names
     return {
-        "label_studio_url": cfg.LABEL_STUDIO_URL,
-        "mlflow_tracking_uri": cfg.MLFLOW_TRACKING_URI,
-        "yolo_confidence_threshold": cfg.YOLO_CONFIDENCE_THRESHOLD,
         "known_defect_names": get_known_defect_names(),
         "faiss_novelty_threshold": cfg.FAISS_NOVELTY_THRESHOLD,
         "hdbscan_min_cluster_size": cfg.HDBSCAN_MIN_CLUSTER_SIZE,
@@ -331,7 +339,14 @@ async def get_config():
 
 @app.get("/api/clusters")
 async def get_clusters():
-    """Get current cluster information."""
+    """
+    Get current cluster information.
+    Returns empty while pipeline is running to prevent stale data display.
+    """
+    # Prevent stale cluster display while pipeline is running or before the first run completes in this session
+    if not _clusters_ready or _pipeline_status["discovery"]["status"] != "complete":
+        return {"clusters": [], "pipeline_running": (_pipeline_status["discovery"]["status"] == "running")}
+
     clusters_dir = cfg.CLUSTERS_DIR
     if not clusters_dir.exists():
         return {"clusters": []}
@@ -367,7 +382,7 @@ async def get_model_versions():
     return {"versions": versions}
 
 
-# ── Image Serving (for Label Studio) ─────────────────────────
+# ── Image Serving ────────────────────────────────────────────
 
 @app.get("/api/crops/{filename}")
 async def serve_crop_image(filename: str):
@@ -431,10 +446,10 @@ async def name_clusters(req: ClusterNamingRequest):
                 label_mapping.append({
                     "defect_name": defect_name,
                     "crop_file": crop["crop_file"],
-                    "source_image": crop["source_image"],
-                    "source_image_name": crop["source_image_name"],
-                    "box_2d_pixels": crop["box_2d_pixels"],
-                    "box_2d_raw": crop["box_2d_raw"],
+                    "source_image": crop.get("source_image", ""),
+                    "source_image_name": crop.get("source_image_name", ""),
+                    "box_2d_pixels": crop.get("box_2d_pixels", []),
+                    "box_2d_raw": crop.get("box_2d_raw", []),
                 })
 
     # Save the flat mapping for retraining
@@ -521,19 +536,7 @@ async def batch_edit_crops(req: BatchEditCropsRequest):
     save_json(manifest, manifest_path)
 
     # Build flat mapping for downstream use
-    label_mapping = []
-    for cluster_name, entry in manifest.get("clusters", {}).items():
-        defect_name = entry.get("defect_name")
-        if defect_name:
-            for crop in entry.get("crops", []):
-                label_mapping.append({
-                    "defect_name": defect_name,
-                    "crop_file": crop["crop_file"],
-                    "source_image": crop["source_image"],
-                    "source_image_name": crop["source_image_name"],
-                    "box_2d_pixels": crop["box_2d_pixels"],
-                    "box_2d_raw": crop["box_2d_raw"],
-                })
+    label_mapping = _build_label_mapping(manifest)
 
     mapping_path = cfg.DATA_DIR / "defect_label_mapping.json"
     save_json({"run_id": manifest.get("run_id"), "labels": label_mapping}, mapping_path)
@@ -564,7 +567,7 @@ async def edit_crop(req: EditCropRequest):
         raise HTTPException(404, "No cluster manifest found")
 
     manifest = load_json(manifest_path)
-    
+
     # 1. Find the crop in source cluster
     src_cluster = req.source_cluster
     if src_cluster not in manifest.get("clusters", {}):
@@ -572,7 +575,7 @@ async def edit_crop(req: EditCropRequest):
 
     src_entry = manifest["clusters"][src_cluster]
     crops = src_entry.get("crops", [])
-    
+
     target_crop = None
     remaining_crops = []
     for c in crops:
@@ -593,11 +596,11 @@ async def edit_crop(req: EditCropRequest):
         dst_cluster = req.target_cluster
         if not dst_cluster or dst_cluster not in manifest.get("clusters", {}):
             raise HTTPException(404, f"Target cluster '{dst_cluster}' not found in manifest")
-        
+
         dst_entry = manifest["clusters"][dst_cluster]
         dst_entry.setdefault("crops", []).append(target_crop)
         dst_entry["crop_count"] = len(dst_entry["crops"])
-        
+
         # Physically move the crop file in the filesystem so everything is synced
         src_path = cfg.CLUSTERS_DIR / src_cluster / req.crop_file
         dst_path = cfg.CLUSTERS_DIR / dst_cluster / req.crop_file
@@ -608,7 +611,7 @@ async def edit_crop(req: EditCropRequest):
             # update local paths inside crop entry if they are stored
             if "crop_path" in target_crop:
                 target_crop["crop_path"] = str(dst_path)
-            
+
         log.info(f"Moved crop '{req.crop_file}' from '{src_cluster}' to '{dst_cluster}'")
 
     elif req.action == "drop":
@@ -621,19 +624,7 @@ async def edit_crop(req: EditCropRequest):
     save_json(manifest, manifest_path)
 
     # 3. Build a flat mapping for downstream use
-    label_mapping = []
-    for cluster_name, entry in manifest.get("clusters", {}).items():
-        defect_name = entry.get("defect_name")
-        if defect_name:
-            for crop in entry.get("crops", []):
-                label_mapping.append({
-                    "defect_name": defect_name,
-                    "crop_file": crop["crop_file"],
-                    "source_image": crop["source_image"],
-                    "source_image_name": crop["source_image_name"],
-                    "box_2d_pixels": crop["box_2d_pixels"],
-                    "box_2d_raw": crop["box_2d_raw"],
-                })
+    label_mapping = _build_label_mapping(manifest)
 
     # Save the flat mapping for retraining
     mapping_path = cfg.DATA_DIR / "defect_label_mapping.json"
@@ -646,134 +637,8 @@ async def edit_crop(req: EditCropRequest):
     }
 
 
-@app.post("/api/clusters/pull-from-ls")
-async def pull_from_label_studio():
-    """
-    Pull annotations from Label Studio and update the cluster manifest.
-
-    Reads all completed annotations from the latest LS project and:
-    1. Applies defect name assignments
-    2. Applies cluster reassignments
-    3. Removes crops flagged as 'drop'
-    4. Regenerates defect_label_mapping.json for retraining
-    """
-    import requests as req
-
-    manifest_path = cfg.CLUSTERS_DIR / "cluster_manifest.json"
-    if not manifest_path.exists():
-        raise HTTPException(404, "No cluster manifest found. Run the pipeline first.")
-
-    manifest = load_json(manifest_path)
-    project_id = manifest.get("project_id")
-    if not project_id:
-        raise HTTPException(400, "No Label Studio project ID in manifest")
-
-    api_key = cfg.LABEL_STUDIO_API_KEY
-    if not api_key:
-        raise HTTPException(400, "LABEL_STUDIO_API_KEY not configured")
-
-    headers = {"Authorization": f"Token {api_key}"}
-
-    # Fetch all tasks with annotations
-    try:
-        resp = req.get(
-            f"{cfg.LABEL_STUDIO_URL}/api/projects/{project_id}/tasks",
-            headers=headers,
-            params={"page_size": 500},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        tasks = data if isinstance(data, list) else data.get("tasks", [])
-    except Exception as e:
-        raise HTTPException(502, f"Failed to fetch tasks from Label Studio: {e}")
-
-    # Process annotations
-    reassignments = 0
-    drops = 0
-    names_found = {}
-
-    for task in tasks:
-        annotations = task.get("annotations", [])
-        if not annotations:
-            continue
-
-        # Use the latest annotation
-        anno = annotations[-1]
-        results = anno.get("result", [])
-        task_data = task.get("data", {})
-        crop_file = task_data.get("source_file", "")
-        original_cluster = task_data.get("cluster_name", "")
-
-        defect_name = None
-        new_cluster = None
-        quality = "keep"
-
-        for r in results:
-            r_type = r.get("type")
-            r_from = r.get("from_name")
-            value = r.get("value", {})
-
-            if r_from == "defect_name" and r_type == "textarea":
-                texts = value.get("text", [])
-                if texts:
-                    defect_name = texts[0].strip()
-
-            elif r_from == "cluster_assignment" and r_type == "choices":
-                choices = value.get("choices", [])
-                if choices and choices[0] != original_cluster:
-                    new_cluster = choices[0]
-
-            elif r_from == "quality" and r_type == "choices":
-                choices = value.get("choices", [])
-                if choices:
-                    quality = choices[0]
-
-        # Apply defect name to the original cluster
-        if defect_name and original_cluster:
-            names_found[original_cluster] = defect_name
-
-        # Handle drop
-        if quality == "drop" and original_cluster in manifest.get("clusters", {}):
-            cluster_entry = manifest["clusters"][original_cluster]
-            cluster_entry["crops"] = [
-                c for c in cluster_entry.get("crops", [])
-                if c["crop_file"] != crop_file
-            ]
-            cluster_entry["crop_count"] = len(cluster_entry["crops"])
-            drops += 1
-
-        # Handle reassignment
-        if new_cluster and quality != "drop":
-            src = manifest["clusters"].get(original_cluster, {})
-            dst = manifest["clusters"].get(new_cluster)
-
-            if src and dst:
-                crop_entry = None
-                new_crops = []
-                for c in src.get("crops", []):
-                    if c["crop_file"] == crop_file:
-                        crop_entry = c
-                    else:
-                        new_crops.append(c)
-
-                if crop_entry:
-                    src["crops"] = new_crops
-                    src["crop_count"] = len(new_crops)
-                    dst["crops"].append(crop_entry)
-                    dst["crop_count"] = len(dst["crops"])
-                    reassignments += 1
-
-    # Apply collected names
-    for cluster_name, defect_name in names_found.items():
-        if cluster_name in manifest.get("clusters", {}):
-            manifest["clusters"][cluster_name]["defect_name"] = defect_name
-            log.info(f"LS → Named cluster '{cluster_name}' as '{defect_name}'")
-
-    # Save updated manifest
-    save_json(manifest, manifest_path)
-
-    # Regenerate the flat label mapping
+def _build_label_mapping(manifest: dict) -> list[dict]:
+    """Build flat label mapping from manifest for retraining."""
     label_mapping = []
     for cluster_name, entry in manifest.get("clusters", {}).items():
         defect_name = entry.get("defect_name")
@@ -787,23 +652,8 @@ async def pull_from_label_studio():
                     "box_2d_pixels": crop.get("box_2d_pixels", []),
                     "box_2d_raw": crop.get("box_2d_raw", []),
                 })
+    return label_mapping
 
-    mapping_path = cfg.DATA_DIR / "defect_label_mapping.json"
-    save_json({"run_id": manifest.get("run_id"), "labels": label_mapping}, mapping_path)
-
-    log.info(
-        f"Pulled from LS: {len(names_found)} names, "
-        f"{reassignments} reassignments, {drops} drops, "
-        f"{len(label_mapping)} labeled crops"
-    )
-
-    return {
-        "message": "Pulled annotations from Label Studio",
-        "defect_names": names_found,
-        "reassignments": reassignments,
-        "drops": drops,
-        "total_labeled_crops": len(label_mapping),
-    }
 
 # ── Parameterized Cluster Image Serving ──────────────────────
 # This MUST come after all specific /api/clusters/* routes
@@ -812,7 +662,6 @@ async def pull_from_label_studio():
 async def serve_cluster_image(cluster_name: str, filename: str):
     """
     Serve a crop image from a cluster folder.
-    Label Studio tasks reference these URLs to display images.
     """
     image_path = cfg.CLUSTERS_DIR / cluster_name / filename
     if not image_path.exists():

@@ -46,7 +46,7 @@ for d in [
 # ============================================================
 # YOLO SETTINGS
 # ============================================================
-YOLO_CONFIDENCE_THRESHOLD = 0.25
+YOLO_CONFIDENCE_THRESHOLD = 0.30
 KNOWN_DEFECTS_JSON = DATA_DIR / "known_defects.json"
 
 # Dynamic — reads from data/known_defects.json at access time.
@@ -99,16 +99,19 @@ HDBSCAN_MIN_SAMPLES = 2
 HDBSCAN_METRIC = "euclidean"
 
 # ============================================================
-# LABEL STUDIO SETTINGS
+# (Label Studio removed — cluster editing is done in the dashboard)
 # ============================================================
-LABEL_STUDIO_URL = os.environ.get("LABEL_STUDIO_URL", "http://localhost:8080")
-LABEL_STUDIO_API_KEY = os.environ.get("LABEL_STUDIO_API_KEY", "")
-LABEL_STUDIO_ML_BACKEND_PORT = 9090
 
 # ============================================================
 # MLFLOW SETTINGS
 # ============================================================
-MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "http://localhost:5000")
+_tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "http://localhost:5000")
+if _tracking_uri and not _tracking_uri.startswith(("http://", "https://", "file://", "sqlite://")):
+    # It's a raw disk path. Convert to standard file:// URI (e.g. file:///E:/path)
+    MLFLOW_TRACKING_URI = Path(_tracking_uri).resolve().as_uri()
+else:
+    MLFLOW_TRACKING_URI = _tracking_uri
+os.environ["MLFLOW_TRACKING_URI"] = MLFLOW_TRACKING_URI
 MLFLOW_EXPERIMENT_NAME = "dyneye-yolo-defect-detection"
 
 # ============================================================

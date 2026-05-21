@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 import config as cfg
 from src.utils import get_logger
 from src.utils.metrics import MetricsTracker
-from src.label_studio.export import export_to_yolo
+# No Label Studio export needed
 from src.retraining.tools.dataset_validator import validate_yolo_dataset
 from src.retraining.tools.dvc_version import version_dataset
 from src.retraining.tools.train_yolo import train_yolo
@@ -76,21 +76,39 @@ _metrics: MetricsTracker | None = None
 
 
 def export_node(state: dict) -> dict:
-    """Export Label Studio annotations to YOLO format."""
+    """Export named dashboard clusters to YOLO dataset format."""
     if _metrics:
         _metrics.start_step("export_annotations")
 
-    project_id = state.get("project_id")
-    if not project_id:
-        error = "No Label Studio project_id provided"
-        if _metrics:
-            _metrics.fail_step("export_annotations", error)
-        return {"errors": state.get("errors", []) + [error], "export_result": {}}
-
     try:
-        result = export_to_yolo(project_id)
+        from src.pipeline.orchestrator import ManifestPoller, AnnotationMapper
+        import config as cfg
+
+        poller = ManifestPoller()
+        named = poller.check_named_clusters()
+
+        if not named:
+            error = "No named clusters found in dashboard manifest. Please name at least one cluster in the dashboard before retraining."
+            if _metrics:
+                _metrics.fail_step("export_annotations", error)
+            return {"errors": state.get("errors", []) + [error], "export_result": {}}
+
+        mapper = AnnotationMapper()
+        known_classes = cfg.KNOWN_DEFECT_NAMES.copy()
+        result = mapper.map_cluster_labels_to_yolo(
+            cluster_labels=named,
+            label_names=known_classes,
+        )
+
+        if result.get("total_mapped", 0) == 0:
+            error = "No annotations could be mapped from the dashboard manifest."
+            if _metrics:
+                _metrics.fail_step("export_annotations", error)
+            return {"errors": state.get("errors", []) + [error], "export_result": {}}
+
         if _metrics:
-            _metrics.end_step("export_annotations", items_processed=result.get("total", 0))
+            _metrics.end_step("export_annotations", items_processed=result.get("total_mapped", 0))
+
         log.info(f"Export complete: {result}")
         return {"export_result": result}
     except Exception as e:
@@ -330,7 +348,7 @@ def build_retraining_graph():
 
 
 def run_retraining_pipeline(
-    project_id: int,
+    project_id: int | None = None,
     epochs: int | None = None,
     imgsz: int | None = None,
     batch_size: int | None = None,
@@ -354,7 +372,7 @@ def run_retraining_pipeline(
 
     initial_state: RetrainingState = {
         "run_id": run_id,
-        "project_id": project_id,
+        "project_id": project_id or -1,
         "epochs": epochs or cfg.YOLO_TRAIN_EPOCHS,
         "imgsz": imgsz or cfg.YOLO_TRAIN_IMGSZ,
         "batch_size": batch_size or cfg.YOLO_TRAIN_BATCH,

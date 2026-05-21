@@ -8,10 +8,11 @@ Chains all 7 nodes of the unknown defect discovery pipeline:
   4. Feature Extraction → DINOv2 embeddings
   5. FAISS Search → novelty detection
   6. HDBSCAN Clustering → group unknowns
-  7. Label Studio Sync → upload for naming
+  7. Manifest Save → persist cluster mapping
 """
 from __future__ import annotations
 
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -45,7 +46,7 @@ NODE_LABELS = {
     "feature_extraction": "DINOv2 Features",
     "faiss_search": "FAISS Novelty Search",
     "hdbscan_cluster": "HDBSCAN Clustering",
-    "label_studio_sync": "Label Studio Sync",
+    "label_studio_sync": "Manifest Save",
 }
 
 
@@ -85,11 +86,15 @@ def _wrap_node(name: str, fn):
             if _metrics:
                 _metrics.end_step(name, items_processed=items)
 
+            # Check if this was a cached skip
+            cached = result.get("_cached", False)
+            suffix = " (cached)" if cached else ""
+
             LogStream.emit(
-                f"{label} complete — {items} items processed",
+                f"{label} complete{suffix} — {items} items processed",
                 level="info",
                 source=name,
-                data={"items_processed": items},
+                data={"items_processed": items, "cached": cached},
             )
             return result
         except Exception as e:
@@ -135,17 +140,48 @@ def build_discovery_graph() -> StateGraph:
     return graph.compile()
 
 
+def _remap_cache_paths(annotations: list[dict]) -> list[dict]:
+    """
+    Remap image paths in VLM cache from Docker paths (/app/...)
+    to the actual PROJECT_ROOT. Ensures cross-environment compatibility.
+    """
+    project_root = str(cfg.PROJECT_ROOT).replace("\\", "/")
+    remapped = []
+    for ann in annotations:
+        ann = dict(ann)  # shallow copy
+        img_path = ann.get("image_path", "")
+        # Replace Docker /app/ prefix with actual project root
+        if img_path.startswith("/app/"):
+            new_path = img_path.replace("/app/", project_root + "/", 1)
+            # Normalize for current OS
+            ann["image_path"] = str(Path(new_path))
+        remapped.append(ann)
+    return remapped
+
+
+def _clean_previous_run() -> None:
+    """Delete old crops and clusters from previous pipeline runs."""
+    for target_dir in [cfg.CROPS_DIR, cfg.CLUSTERS_DIR]:
+        if target_dir.exists():
+            shutil.rmtree(target_dir)
+            log.info(f"Cleaned previous run data: {target_dir}")
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+
 def run_discovery_pipeline(
     input_images_dir: str | None = None,
-    confidence_threshold: float | None = None,
     yolo_model_path: str | None = None,
-    from_vlm_cache: bool = False,
+    use_cache: bool = False,
 ) -> dict:
     """
     Execute the full discovery pipeline.
 
-    Known defect names are loaded automatically from the registry
-    (data/known_defects.json) — no manual input needed.
+    Args:
+        input_images_dir: Path to input images (defaults to config).
+        yolo_model_path: Optional custom YOLO model path.
+        use_cache: If True, skip YOLO/VLM/Crop and reuse existing
+                   crops + VLM annotations from disk (fast demo mode).
+                   If False, delete old data and run the full pipeline.
     """
     global _metrics
 
@@ -159,36 +195,41 @@ def run_discovery_pipeline(
         "run_id": run_id,
         "input_images_dir": input_images_dir or str(cfg.INPUT_IMAGES_DIR),
         "known_defect_names": known_names,
-        "confidence_threshold": confidence_threshold or cfg.YOLO_CONFIDENCE_THRESHOLD,
+        "use_cache": use_cache,
         "errors": [],
     }
 
     if yolo_model_path:
         initial_state["yolo_model_path"] = yolo_model_path
 
-    # Cache skip integration
-    if from_vlm_cache:
+    # ── Cache vs. Fresh run ──────────────────────────────────
+    if use_cache:
+        log.info("Cache mode enabled — will reuse existing crops and VLM annotations.")
+        # Load VLM cache if available (for metadata propagation)
         cache_path = cfg.DATA_DIR / "vlm_cache.json"
         if cache_path.exists():
             try:
                 import json
                 with open(cache_path, "r") as f:
                     cached_ann = json.load(f)
+                cached_ann = _remap_cache_paths(cached_ann)
                 initial_state["vlm_annotations"] = cached_ann
-                log.info(f"Loaded {len(cached_ann)} cached VLM annotations from {cache_path}. YOLO and active VLM steps will be bypassed.")
+                log.info(f"Loaded {len(cached_ann)} cached VLM annotations (paths remapped).")
             except Exception as e:
-                log.error(f"Failed to load VLM cache: {e}. Executing full active pipeline run.")
-        else:
-            log.warning(f"VLM cache not found at {cache_path}. Executing full active pipeline run.")
+                log.warning(f"Failed to load VLM cache: {e}. Crop files will still be used.")
+    else:
+        log.info("Fresh run — cleaning previous crops and clusters.")
+        _clean_previous_run()
 
     LogStream.emit(
-        f"Discovery pipeline started (run: {run_id})",
+        f"Discovery pipeline started (run: {run_id}, cache: {use_cache})",
         level="step",
         source="pipeline",
         data={
             "run_id": run_id,
             "images_dir": initial_state["input_images_dir"],
             "known_defects": initial_state["known_defect_names"],
+            "use_cache": use_cache,
         },
     )
 
@@ -222,16 +263,15 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Run the discovery pipeline")
     parser.add_argument("--images-dir", default=None, help="Input images directory")
-    parser.add_argument("--confidence", type=float, default=None, help="YOLO confidence threshold")
     parser.add_argument("--model", default=None, help="YOLO model path")
-    parser.add_argument("--from-vlm-cache", action="store_true", help="Bypass VLM and run from cached VLM output")
+    parser.add_argument("--use-cache", action="store_true",
+                        help="Skip YOLO/VLM and reuse cached crops (fast demo mode)")
     args = parser.parse_args()
 
     result = run_discovery_pipeline(
         input_images_dir=args.images_dir,
-        confidence_threshold=args.confidence,
         yolo_model_path=args.model,
-        from_vlm_cache=args.from_vlm_cache,
+        use_cache=args.use_cache,
     )
 
     print(f"\nPipeline complete. Run ID: {result.get('run_id')}")

@@ -16,11 +16,13 @@ class PipelineState(TypedDict, total=False):
     and writes its outputs back into state.
     """
 
+    # ── Pipeline Mode ────────────────────────────────────────
+    use_cache: bool                      # If True, skip YOLO/VLM/Crop and reuse existing data
+
     # ── Node 1: YOLO Inference ───────────────────────────────
     # Input: user-provided at graph invocation
     input_images_dir: str                # Path to directory with mixed images
     known_defect_names: list[str]        # List of known defect class names
-    confidence_threshold: float          # YOLO confidence cutoff
 
     # Output
     all_image_paths: list[str]           # All image paths found

@@ -2,13 +2,13 @@
 Autonomous Orchestrator
 
 Runs as a background daemon that:
-  1. Monitors cluster folders for new images (hot-sync to Label Studio)
-  2. Polls Label Studio for completed cluster naming
+  1. Monitors cluster folders for new images
+  2. Watches for human-assigned defect names in the dashboard manifest
   3. Maps cluster names back as labels on original full images (YOLO format)
   4. Uses Gemini to decide when retraining should be triggered
   5. Auto-triggers the retraining pipeline
 
-The only human interaction is naming clusters in Label Studio.
+The only human interaction is naming clusters in the DYN-EYE dashboard.
 Everything else is fully autonomous.
 """
 from __future__ import annotations
@@ -34,8 +34,7 @@ log = get_logger("orchestrator")
 
 class ClusterWatcher:
     """
-    Watch data/clusters/ for new images and hot-sync them
-    to Label Studio for naming.
+    Watch data/clusters/ for new images and detect changes.
     """
 
     def __init__(self):
@@ -73,83 +72,33 @@ class ClusterWatcher:
         return {k: len(v) for k, v in clusters.items()}
 
 
-# ── Label Studio Poller ──────────────────────────────────────
+# ── Dashboard Manifest Poller ────────────────────────────────
 
-class LabelStudioPoller:
+class ManifestPoller:
     """
-    Poll Label Studio for completed annotations (named clusters).
-    When clusters are named, map labels back to original images.
+    Poll the cluster manifest for human-assigned defect names.
+    When clusters are named in the dashboard, this picks them up.
     """
 
-    def __init__(self):
-        self._api_url = cfg.LABEL_STUDIO_URL
-        self._api_key = cfg.LABEL_STUDIO_API_KEY
-
-    def _headers(self):
-        return {"Authorization": f"Token {self._api_key}"}
-
-    def get_project_labels(self, project_id: int) -> dict[str, str]:
+    def check_named_clusters(self) -> dict[str, str]:
         """
-        Fetch completed annotations from Label Studio project.
-        Returns mapping of {image_filename: assigned_label}.
+        Check which clusters have been named in the dashboard manifest.
+        Returns {cluster_name: defect_name} for named clusters.
         """
-        import requests
-        try:
-            resp = requests.get(
-                f"{self._api_url}/api/projects/{project_id}/tasks",
-                headers=self._headers(),
-                params={"page_size": 500},
-                timeout=10,
-            )
-            resp.raise_for_status()
-            tasks = resp.json().get("results", resp.json()) if isinstance(resp.json(), dict) else resp.json()
-
-            label_map = {}
-            for task in tasks:
-                annotations = task.get("annotations", [])
-                if not annotations:
-                    continue
-                # Take the latest annotation
-                ann = annotations[-1]
-                results = ann.get("result", [])
-                for r in results:
-                    label_name = r.get("value", {}).get("choices", [""])[0] \
-                        if r.get("type") == "choices" \
-                        else r.get("value", {}).get("rectanglelabels", [""])[0] \
-                        if r.get("type") == "rectanglelabels" \
-                        else ""
-                    if label_name:
-                        # Extract filename from task data
-                        data = task.get("data", {})
-                        image_url = data.get("image", "")
-                        filename = Path(image_url).stem if image_url else ""
-                        if filename:
-                            label_map[filename] = label_name
-            return label_map
-        except Exception as e:
-            log.warning(f"Label Studio poll failed: {e}")
+        manifest_path = cfg.CLUSTERS_DIR / "cluster_manifest.json"
+        if not manifest_path.exists():
             return {}
 
-    def check_clusters_named(self, project_id: int) -> dict[str, str]:
-        """
-        Check which cluster folders have been named in Label Studio.
-        Returns {old_cluster_name: new_label_name}.
-        """
-        import requests
         try:
-            resp = requests.get(
-                f"{self._api_url}/api/projects/{project_id}",
-                headers=self._headers(),
-                timeout=10,
-            )
-            resp.raise_for_status()
-            project = resp.json()
-
-            # Get task annotations
-            label_map = self.get_project_labels(project_id)
-            return label_map
+            manifest = load_json(manifest_path)
+            named = {}
+            for cluster_name, entry in manifest.get("clusters", {}).items():
+                defect_name = entry.get("defect_name")
+                if defect_name:
+                    named[cluster_name] = defect_name
+            return named
         except Exception as e:
-            log.warning(f"Cluster naming check failed: {e}")
+            log.warning(f"Manifest poll failed: {e}")
             return {}
 
 
@@ -157,7 +106,7 @@ class LabelStudioPoller:
 
 class AnnotationMapper:
     """
-    When clusters are named in Label Studio, maps those names
+    When clusters are named in the dashboard, maps those names
     back as YOLO-format labels on the ORIGINAL full images
     (not the cropped ones) using the VLM bbox data.
     """
@@ -250,7 +199,7 @@ class AnnotationMapper:
         data_yaml = {
             "path": str(yolo_dir),
             "train": "images/train",
-            "val": "images/val",
+            "val": "images/train",
             "nc": len(label_names),
             "names": label_names,
         }
@@ -353,17 +302,16 @@ class AutonomousOrchestrator:
     Flow:
       1. Discovery pipeline runs (triggered once)
       2. Clusters appear in data/clusters/
-      3. Clusters are hot-synced to Label Studio
-      4. Human names clusters in Label Studio (ONLY human step)
-      5. Orchestrator detects named clusters
-      6. Maps labels back to original images in YOLO format
-      7. Gemini agent decides if retraining should happen
-      8. Retraining pipeline runs autonomously
+      3. Human names clusters in the DYN-EYE dashboard (ONLY human step)
+      4. Orchestrator detects named clusters from manifest
+      5. Maps labels back to original images in YOLO format
+      6. Gemini agent decides if retraining should happen
+      7. Retraining pipeline runs autonomously
     """
 
     def __init__(self):
         self.watcher = ClusterWatcher()
-        self.poller = LabelStudioPoller()
+        self.manifest_poller = ManifestPoller()
         self.mapper = AnnotationMapper()
         self.decision_agent = RetrainingDecisionAgent()
         self._running = False
@@ -404,56 +352,54 @@ class AutonomousOrchestrator:
 
     def _tick(self, project_id: int | None):
         """Single orchestration cycle."""
-        # 1. Check for new cluster images → hot-sync
+        # 1. Check for new cluster images
         new_images = self.watcher.get_new_images()
         if new_images:
             total_new = sum(len(v) for v in new_images.values())
             LogStream.emit(
-                f"Hot-sync: {total_new} new images across {len(new_images)} clusters",
+                f"Detected {total_new} new images across {len(new_images)} clusters",
                 level="info",
                 source="cluster_watcher",
             )
-            # TODO: sync new images to Label Studio if project_id available
 
-        # 2. Check if clusters have been named in Label Studio
-        if project_id:
-            named = self.poller.check_clusters_named(project_id)
-            if named:
-                LogStream.emit(
-                    f"Found {len(named)} named clusters in Label Studio",
-                    level="step",
-                    source="ls_poller",
+        # 2. Check if clusters have been named in the dashboard manifest
+        named = self.manifest_poller.check_named_clusters()
+        if named:
+            LogStream.emit(
+                f"Found {len(named)} named clusters in manifest",
+                level="step",
+                source="manifest_poller",
+            )
+
+            # 3. Map labels back to original images
+            cluster_stats = self.watcher.get_all_clusters()
+            known_classes = cfg.KNOWN_DEFECT_NAMES.copy()
+            mapping_result = self.mapper.map_cluster_labels_to_yolo(
+                cluster_labels=named,
+                label_names=known_classes,
+            )
+
+            if mapping_result["total_mapped"] > 0:
+                # 4. Ask Gemini if we should retrain
+                should, reason = self.decision_agent.should_retrain(
+                    cluster_stats=cluster_stats,
+                    named_clusters=named,
+                    current_model_classes=cfg.KNOWN_DEFECT_NAMES,
                 )
 
-                # 3. Map labels back to original images
-                cluster_stats = self.watcher.get_all_clusters()
-                known_classes = cfg.KNOWN_DEFECT_NAMES.copy()
-                mapping_result = self.mapper.map_cluster_labels_to_yolo(
-                    cluster_labels=named,
-                    label_names=known_classes,
-                )
-
-                if mapping_result["total_mapped"] > 0:
-                    # 4. Ask Gemini if we should retrain
-                    should, reason = self.decision_agent.should_retrain(
-                        cluster_stats=cluster_stats,
-                        named_clusters=named,
-                        current_model_classes=cfg.KNOWN_DEFECT_NAMES,
+                if should:
+                    LogStream.emit(
+                        "Auto-triggering retraining pipeline",
+                        level="step",
+                        source="orchestrator",
                     )
+                    self._run_retraining(project_id)
 
-                    if should:
-                        LogStream.emit(
-                            "Auto-triggering retraining pipeline",
-                            level="step",
-                            source="orchestrator",
-                        )
-                        self._run_retraining(project_id)
-
-    def _run_retraining(self, project_id: int):
+    def _run_retraining(self, project_id: int | None):
         """Trigger the retraining pipeline."""
         try:
             from src.retraining.agent import run_retraining_pipeline
-            result = run_retraining_pipeline(project_id=project_id)
+            result = run_retraining_pipeline(project_id=project_id or -1)
             success = result.get("training_result", {}).get("success", False)
             LogStream.emit(
                 f"Retraining {'succeeded' if success else 'failed'}",

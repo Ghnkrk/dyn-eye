@@ -143,9 +143,9 @@ def vlm_annotation_node(state: dict) -> dict:
     Writes:
         state["vlm_annotations"]
     """
-    if "vlm_annotations" in state:
-        log.info("VLM annotations cache detected in state. Skipping active VLM inference.")
-        return {"vlm_annotations": state["vlm_annotations"]}
+    if state.get("use_cache"):
+        log.info("Cache mode — skipping VLM annotation (reusing cached annotations).")
+        return {"vlm_annotations": state.get("vlm_annotations", []), "_cached": True}
 
     unknown_paths = state.get("unknown_image_paths", [])
     if not unknown_paths:
