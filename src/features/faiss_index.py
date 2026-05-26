@@ -42,6 +42,7 @@ class FAISSIndexManager:
         self,
         known_crops_dir: str | Path | None = None,
         class_subdirs: bool = True,
+        allowed_classes: list[str] | None = None,
     ) -> int:
         """
         Build the FAISS index from known defect crops.
@@ -58,16 +59,21 @@ class FAISSIndexManager:
         Returns the number of vectors indexed.
         """
         known_dir = Path(known_crops_dir or cfg.KNOWN_DEFECTS_DIR)
-        log.info(f"Building FAISS index from {known_dir}")
+        log.info(f"Building FAISS index from {known_dir} (allowed_classes={allowed_classes})")
 
         all_paths: list[str] = []
         all_labels: list[str] = []
+
+        allowed_set = {c.lower() for c in allowed_classes} if allowed_classes is not None else None
 
         if class_subdirs:
             for subdir in sorted(known_dir.iterdir()):
                 if not subdir.is_dir():
                     continue
                 class_name = subdir.name
+                if allowed_set is not None and class_name.lower() not in allowed_set:
+                    log.info(f"  Skipping class '{class_name}' (not in allowed list)")
+                    continue
                 from src.utils.io_helpers import list_images
                 imgs = list_images(subdir)
                 all_paths.extend([str(p) for p in imgs])
@@ -165,6 +171,18 @@ class FAISSIndexManager:
         dist = float(D[0, 0])
         label = self.labels[idx] if idx < len(self.labels) else "unknown"
         return label, dist
+
+    def reset(self) -> None:
+        """Physically delete the FAISS index files and re-instantiate an empty index."""
+        idx_p = Path(self.index_path)
+        lbl_p = Path(self.labels_path)
+        if idx_p.exists():
+            idx_p.unlink()
+        if lbl_p.exists():
+            lbl_p.unlink()
+        self.index = faiss.IndexFlatL2(cfg.FEATURE_DIM)
+        self.labels = []
+        log.info("FAISS index files deleted and index reset to empty state")
 
     # ── Persistence ──────────────────────────────────────────
     def _save(self) -> None:

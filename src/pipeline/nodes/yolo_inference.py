@@ -121,6 +121,29 @@ def yolo_inference_node(state: dict) -> dict:
                     if cls_name.lower() in known_names_lower and conf >= conf_thresh:
                         is_known = True
 
+            # Fallback Stage 2: Check if this image has a crop in the known_defect_crops registry
+            # (Bootstraps filtering for known defects before the model is fully fine-tuned)
+            if not is_known:
+                img_stem = img_path.stem
+                known_dir = Path(cfg.KNOWN_DEFECTS_DIR)
+                if known_dir.exists():
+                    for sub in known_dir.iterdir():
+                        if sub.is_dir() and sub.name.lower() in known_names_lower:
+                            for crop_file in sub.iterdir():
+                                if crop_file.is_file() and crop_file.name.startswith(img_stem):
+                                    is_known = True
+                                    log.info(f"Fallback matched known crop for {img_path.name} in registry class '{sub.name}'")
+                                    detections.append({
+                                        "class_id": -99,
+                                        "class_name": sub.name,
+                                        "confidence": 1.0,
+                                        "bbox_xyxy": [0.0, 0.0, 0.0, 0.0],
+                                        "note": "Matched via known defect crops registry"
+                                    })
+                                    break
+                        if is_known:
+                            break
+
             if is_known:
                 known_paths.append(img_str)
             else:

@@ -70,8 +70,16 @@ KNOWN_DEFECT_NAMES: list[str] = _load_known_names()
 GEMINI_API_KEY = os.environ.get(
     "GEMINI_API_KEY",
     "AIzaSyCOTORQ_xn-j-OffOrNibKtEGEGMf7_Zm0",
-)
+).strip("'\" ")
 os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY
+
+GROQ_API_KEY = os.environ.get(
+    "GROQ_API_KEY",
+    "",
+).strip("'\" ")
+os.environ["GROQ_API_KEY"] = GROQ_API_KEY
+GROQ_ADVISOR_MODEL = "llama-3.3-70b-versatile"
+
 VLM_MODEL_ID = "gemma-4-31b-it"
 VLM_TEMPERATURE = 0.1
 VLM_SLEEP_BETWEEN = 4.5
@@ -105,8 +113,11 @@ HDBSCAN_METRIC = "euclidean"
 # ============================================================
 # MLFLOW SETTINGS
 # ============================================================
-_tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "http://localhost:5000")
-if _tracking_uri and not _tracking_uri.startswith(("http://", "https://", "file://", "sqlite://")):
+_tracking_uri = os.environ.get("MLFLOW_TRACKING_URI")
+if not _tracking_uri:
+    # Use serverless local file store
+    MLFLOW_TRACKING_URI = (DATA_DIR / "mlruns").resolve().as_uri()
+elif not _tracking_uri.startswith(("http://", "https://", "file://", "sqlite://")):
     # It's a raw disk path. Convert to standard file:// URI (e.g. file:///E:/path)
     MLFLOW_TRACKING_URI = Path(_tracking_uri).resolve().as_uri()
 else:
@@ -121,8 +132,24 @@ DASHBOARD_HOST = "0.0.0.0"
 DASHBOARD_PORT = 8501
 
 # ============================================================
-# YOLO TRAINING DEFAULTS
+# LLM TRAINING ADVISOR (Gemini)
 # ============================================================
-YOLO_TRAIN_EPOCHS = 50
+LLM_ADVISOR_MODEL = "gemini-2.0-flash"
+LLM_ADVISOR_TEMPERATURE = 0.2
+LLM_MIN_CROPS_PER_CLASS = 10   # Minimum crops per class before LLM considers training
+
+# ============================================================
+# YOLO TRAINING DEFAULTS
+YOLO_TRAIN_EPOCHS = 1
 YOLO_TRAIN_IMGSZ = 640
 YOLO_TRAIN_BATCH = 16
+
+YOLO_TRAIN_LR0 = 0.01
+YOLO_TRAIN_LRF = 0.01
+YOLO_TRAIN_MOMENTUM = 0.937
+YOLO_TRAIN_WEIGHT_DECAY = 0.0005
+YOLO_TRAIN_WARMUP_EPOCHS = 3.0
+YOLO_TRAIN_PATIENCE = 20
+YOLO_TRAIN_OPTIMIZER = "auto"
+YOLO_TRAIN_COS_LR = False
+YOLO_TRAIN_FREEZE = None

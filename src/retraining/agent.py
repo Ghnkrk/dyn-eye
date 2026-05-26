@@ -1,15 +1,17 @@
 """
-Retraining Agent — LangGraph-Based
+Retraining Agent — LangGraph-Based with LLM Advisor
 
 A LangGraph agent that orchestrates the post-labeling workflow:
-  1. Export annotations from Label Studio → YOLO format
+  1. Export annotations from named clusters → YOLO format
   2. Validate YOLO dataset format
   3. Version dataset with DVC
-  4. Fine-tune YOLO model
-  5. Version and deploy model via MLflow
+  4. LLM Advisor → analyze dataset and recommend training config
+  5. Fine-tune YOLO model with LLM-recommended parameters
+  6. Version and deploy model via MLflow
+  7. Sync known-defects registry + rebuild FAISS
 
-The agent uses tools for each step, allowing flexible execution
-and error handling.
+The LLM advisor step uses Gemini to intelligently decide whether
+to train and with what hyperparameters.
 """
 from __future__ import annotations
 
@@ -29,6 +31,8 @@ from src.retraining.tools.dataset_validator import validate_yolo_dataset
 from src.retraining.tools.dvc_version import version_dataset
 from src.retraining.tools.train_yolo import train_yolo
 from src.retraining.tools.mlflow_deploy import deploy_model
+from src.retraining.llm_advisor import get_training_recommendation, collect_dataset_metadata
+from src.retraining.model_registry import ModelRegistry
 from src.features.known_defects_registry import (
     register_from_yolo_model,
     register_from_data_yaml,
@@ -55,6 +59,9 @@ class RetrainingState(TypedDict, total=False):
 
     # Versioning
     dvc_result: dict
+
+    # LLM Advisor
+    llm_recommendation: dict
 
     # Training
     training_result: dict
@@ -172,17 +179,118 @@ def version_dataset_node(state: dict) -> dict:
         return {"errors": state.get("errors", []) + [str(e)], "dvc_result": {}}
 
 
+def llm_advisor_node(state: dict) -> dict:
+    """
+    LLM Training Advisor node.
+
+    Queries the Gemini LLM to analyze dataset metadata and determine:
+      - Whether enough data exists to train
+      - Optimal training hyperparameters
+    """
+    if _metrics:
+        _metrics.start_step("llm_advisor")
+
+    try:
+        metadata = collect_dataset_metadata()
+        recommendation = get_training_recommendation(metadata)
+
+        if _metrics:
+            _metrics.end_step("llm_advisor", items_processed=1)
+
+        log.info(
+            f"LLM Advisor: should_train={recommendation['should_train']}, "
+            f"reason={recommendation.get('reason', '')[:100]}"
+        )
+
+        return {"llm_recommendation": recommendation}
+
+    except Exception as e:
+        log.warning(f"LLM advisor failed, will use user-provided params: {e}")
+        if _metrics:
+            _metrics.fail_step("llm_advisor", str(e))
+        # Don't block pipeline — use empty recommendation (falls back to defaults)
+        return {"llm_recommendation": {"should_train": True, "config": {}, "reason": f"LLM unavailable: {e}"}}
+
+
 def train_node(state: dict) -> dict:
-    """Fine-tune YOLO model."""
+    """Fine-tune YOLO model with LLM-recommended or user-specified params."""
     if _metrics:
         _metrics.start_step("train_yolo")
 
+    # Check LLM recommendation
+    rec = state.get("llm_recommendation", {})
+    if rec and not rec.get("should_train", True):
+        reason = rec.get("reason", "LLM advised against training")
+        log.warning(f"LLM advises against training: {reason}")
+        if _metrics:
+            _metrics.fail_step("train_yolo", reason)
+        return {
+            "training_result": {
+                "success": False,
+                "model_path": "",
+                "metrics": {},
+                "error": f"LLM advisor: {reason}",
+                "llm_recommendation": rec,
+            }
+        }
+
+    # Merge: user params → LLM config → config defaults
+    llm_cfg = rec.get("config", {}) if rec else {}
+
+    # User-specified params override LLM
+    epochs = state.get("epochs") or llm_cfg.get("epochs", cfg.YOLO_TRAIN_EPOCHS)
+    imgsz = state.get("imgsz") or llm_cfg.get("imgsz", cfg.YOLO_TRAIN_IMGSZ)
+    batch = state.get("batch_size") or llm_cfg.get("batch", cfg.YOLO_TRAIN_BATCH)
+
     try:
         result = train_yolo(
-            epochs=state.get("epochs", cfg.YOLO_TRAIN_EPOCHS),
-            imgsz=state.get("imgsz", cfg.YOLO_TRAIN_IMGSZ),
-            batch=state.get("batch_size", cfg.YOLO_TRAIN_BATCH),
+            epochs=epochs,
+            imgsz=imgsz,
+            batch=batch,
+            # Pass LLM-recommended hyperparameters
+            lr0=llm_cfg.get("lr0"),
+            lrf=llm_cfg.get("lrf"),
+            momentum=llm_cfg.get("momentum"),
+            weight_decay=llm_cfg.get("weight_decay"),
+            warmup_epochs=llm_cfg.get("warmup_epochs"),
+            patience=llm_cfg.get("patience"),
+            optimizer=llm_cfg.get("optimizer"),
+            cos_lr=llm_cfg.get("cos_lr"),
+            freeze=llm_cfg.get("freeze"),
+            augment=llm_cfg.get("augment"),
+            mosaic=llm_cfg.get("mosaic"),
+            mixup=llm_cfg.get("mixup"),
+            degrees=llm_cfg.get("degrees"),
+            translate=llm_cfg.get("translate"),
+            scale=llm_cfg.get("scale"),
+            flipud=llm_cfg.get("flipud"),
+            fliplr=llm_cfg.get("fliplr"),
+            hsv_h=llm_cfg.get("hsv_h"),
+            hsv_s=llm_cfg.get("hsv_s"),
+            hsv_v=llm_cfg.get("hsv_v"),
         )
+
+        # Register in model registry if training succeeded
+        if result.get("success") and result.get("model_path"):
+            try:
+                registry = ModelRegistry()
+                metadata = collect_dataset_metadata()
+                registry.register_version(
+                    model_path=result["model_path"],
+                    metrics=result.get("metrics"),
+                    training_config=result.get("training_config"),
+                    source="llm-advised-finetuning",
+                    notes=rec.get("reason", ""),
+                    classes=metadata.get("class_names", []),
+                    dataset_stats={
+                        "total_crops": metadata.get("total_crops", 0),
+                        "num_classes": metadata.get("num_classes", 0),
+                        "classes": metadata.get("classes", {}),
+                    },
+                )
+            except Exception as reg_err:
+                log.warning(f"Model registry update failed (non-fatal): {reg_err}")
+
         if result["success"]:
             if _metrics:
                 _metrics.end_step("train_yolo", items_processed=1,
@@ -214,6 +322,18 @@ def deploy_node(state: dict) -> dict:
             model_path=training.get("model_path"),
             metrics=training.get("metrics"),
         )
+
+        # Update registry deployment status
+        if result.get("success"):
+            try:
+                registry = ModelRegistry()
+                versions = registry.list_versions()
+                if versions:
+                    latest = versions[0]  # newest first
+                    registry.deploy_version(latest["version_id"], confirmed_by="auto-deploy")
+            except Exception as reg_err:
+                log.warning(f"Registry deploy status update failed: {reg_err}")
+
         if result["success"]:
             if _metrics:
                 _metrics.end_step("deploy_model", items_processed=1)
@@ -294,7 +414,7 @@ def sync_registry_node(state: dict) -> dict:
         }
 
 
-# ── Conditional Edge ─────────────────────────────────────────
+# ── Conditional Edges ────────────────────────────────────────
 
 def should_continue_after_validation(state: dict) -> str:
     """Check if we should continue after validation."""
@@ -317,12 +437,13 @@ def should_continue_after_training(state: dict) -> str:
 # ── Graph Assembly ───────────────────────────────────────────
 
 def build_retraining_graph():
-    """Build the LangGraph retraining agent."""
+    """Build the LangGraph retraining agent with LLM advisor."""
     graph = StateGraph(RetrainingState)
 
     graph.add_node("export_annotations", export_node)
     graph.add_node("validate_dataset", validate_node)
     graph.add_node("version_dataset", version_dataset_node)
+    graph.add_node("llm_advisor", llm_advisor_node)
     graph.add_node("train_yolo", train_node)
     graph.add_node("deploy_model", deploy_node)
     graph.add_node("sync_registry", sync_registry_node)
@@ -335,7 +456,8 @@ def build_retraining_graph():
         should_continue_after_validation,
         {"version_dataset": "version_dataset", END: END},
     )
-    graph.add_edge("version_dataset", "train_yolo")
+    graph.add_edge("version_dataset", "llm_advisor")
+    graph.add_edge("llm_advisor", "train_yolo")
     graph.add_conditional_edges(
         "train_yolo",
         should_continue_after_training,

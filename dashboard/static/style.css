@@ -938,3 +938,194 @@ input:checked + .toggle-slider:before { transform: translateX(16px); }
     color: white;
 }
 
+
+/* ── Model Management ────────────────────────────────────── */
+
+.model-versions-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 12px;
+}
+
+.model-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-light);
+    border-radius: 10px;
+    padding: 16px;
+    transition: box-shadow 0.2s, border-color 0.2s, transform 0.15s;
+    position: relative;
+}
+.model-card:hover {
+    box-shadow: var(--shadow-md);
+    border-color: var(--accent);
+    transform: translateY(-1px);
+}
+.model-card--active {
+    border-color: var(--success);
+    background: var(--success-soft);
+}
+.model-card--active::before {
+    content: '✓ ACTIVE';
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: var(--success);
+    color: white;
+    font-size: 0.6rem;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 4px;
+    letter-spacing: 0.5px;
+}
+
+.model-card-title {
+    font-weight: 600;
+    font-size: 0.85rem;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+    font-family: 'JetBrains Mono', monospace;
+}
+.model-card-meta {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+    line-height: 1.5;
+}
+.model-card-meta span {
+    display: inline-block;
+    margin-right: 12px;
+}
+
+.model-metrics {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 10px;
+}
+.model-metric {
+    background: var(--bg-elevated);
+    border-radius: 4px;
+    padding: 3px 8px;
+    font-size: 0.7rem;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-secondary);
+}
+.model-metric-label {
+    color: var(--text-muted);
+    margin-right: 4px;
+}
+.model-metric-value {
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.model-classes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 10px;
+}
+.model-class-tag {
+    background: var(--violet-soft);
+    color: var(--violet);
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 0.65rem;
+    font-weight: 500;
+}
+
+.model-card-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+}
+.model-card-actions .btn {
+    font-size: 0.7rem;
+    padding: 4px 10px;
+}
+
+/* Advisor preview in modal */
+.advisor-section {
+    margin-bottom: 16px;
+}
+.advisor-section-title {
+    font-weight: 600;
+    font-size: 0.85rem;
+    color: var(--text-primary);
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.advisor-decision {
+    padding: 12px;
+    border-radius: 8px;
+    margin-bottom: 12px;
+    font-weight: 500;
+}
+.advisor-decision--yes {
+    background: var(--success-soft);
+    color: var(--success);
+    border: 1px solid var(--success);
+}
+.advisor-decision--no {
+    background: var(--warning-soft);
+    color: var(--warning);
+    border: 1px solid var(--warning);
+}
+.advisor-params {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 16px;
+    font-size: 0.75rem;
+    font-family: 'JetBrains Mono', monospace;
+}
+.advisor-param-key {
+    color: var(--text-muted);
+}
+.advisor-param-val {
+    color: var(--accent);
+    font-weight: 600;
+}
+
+/* ── MLOps Retraining Console & Tabs Styling ────────── */
+.tabs-header {
+    background: var(--bg-surface);
+}
+
+.tab-btn {
+    transition: all var(--ease);
+}
+.tab-btn:hover {
+    color: var(--accent) !important;
+}
+.tab-btn.active {
+    border-bottom-color: var(--accent) !important;
+    color: var(--accent) !important;
+}
+
+.train-log-screen {
+    scrollbar-width: thin;
+}
+.train-log-screen::-webkit-scrollbar {
+    width: 6px;
+}
+.train-log-screen::-webkit-scrollbar-thumb {
+    background: #334155;
+    border-radius: 3px;
+}
+
+.advisor-card {
+    animation: fadeIn var(--ease);
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse {
+    0%, 100% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.1); opacity: 0.6; }
+}
+

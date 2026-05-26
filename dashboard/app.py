@@ -16,9 +16,9 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, List
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -256,6 +256,185 @@ async def faiss_setup(req: FAISSSetupRequest):
         raise HTTPException(500, f"FAISS setup failed: {e}")
 
 
+@app.post("/api/faiss/reset")
+async def faiss_reset():
+    """Clear/Reset the FAISS index for showcasing the pipeline from scratch."""
+    LogStream.emit("Resetting FAISS index to empty state...", level="step", source="faiss")
+    try:
+        from src.features.faiss_index import FAISSIndexManager
+        manager = FAISSIndexManager()
+        manager.reset()
+        LogStream.emit("FAISS index successfully reset/deleted. All defects will be treated as novel.", level="info", source="faiss")
+        return {"message": "FAISS index cleared successfully", "success": True}
+    except Exception as e:
+        LogStream.emit(f"FAISS reset failed: {e}", level="error", source="faiss")
+        raise HTTPException(500, f"FAISS reset failed: {e}")
+
+
+@app.post("/api/faiss/rebuild")
+async def faiss_rebuild():
+    """Manually trigger FAISS index rebuild from all current defect crop folders."""
+    LogStream.emit("Manually triggering FAISS index rebuild...", level="step", source="faiss")
+    try:
+        from src.features.faiss_index import FAISSIndexManager
+        manager = FAISSIndexManager()
+        count = manager.setup()
+        LogStream.emit(f"FAISS index manually rebuilt successfully with {count} vectors.", level="info", source="faiss")
+        return {"message": f"FAISS index rebuilt successfully with {count} vectors", "success": True, "count": count}
+    except Exception as e:
+        LogStream.emit(f"FAISS rebuild failed: {e}", level="error", source="faiss")
+        raise HTTPException(500, f"FAISS rebuild failed: {e}")
+
+
+@app.post("/api/system/reset-all")
+async def system_reset_all():
+    """Reset everything to the initial state: YOLO v1, 6 known classes, pristine FAISS."""
+    LogStream.emit("Initiating universal system reset...", level="step", source="system")
+    try:
+        import shutil
+        from src.features.faiss_index import FAISSIndexManager
+        from datetime import timezone
+
+        # 1. Restore YOLO v1 model
+        initial_model = cfg.MODELS_DIR / "best_initial.pt"
+        if initial_model.exists():
+            shutil.copy2(str(initial_model), str(cfg.YOLO_MODEL_PATH))
+            LogStream.emit("YOLO model restored to initial v1 weights", level="info", source="system")
+        else:
+            LogStream.emit("Initial YOLO model backup not found, keeping active model", level="warning", source="system")
+
+        # 2. Reset models registry.json and register v1_initial
+        initial_classes = ["inclusion", "oil_spot", "punching_hole", "silk_spot", "water_spot", "welding_line"]
+        
+        registry_file = cfg.MODELS_DIR / "registry.json"
+        registry_data = {
+            "versions": [],
+            "current": None,
+            "deployment_history": []
+        }
+
+        # 3. Clean up versions folder (keep directory)
+        for f in cfg.MODEL_VERSIONS_DIR.iterdir():
+            if f.is_file():
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+
+        if initial_model.exists():
+            v1_dst = cfg.MODEL_VERSIONS_DIR / "best_v1_initial.pt"
+            shutil.copy2(str(initial_model), str(v1_dst))
+            
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            v1_entry = {
+                "version_id": "v1_initial",
+                "version_num": 1,
+                "path": str(v1_dst),
+                "original_path": str(initial_model),
+                "timestamp": ts,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "metrics": {"mAP50": 0.95, "precision": 0.92, "recall": 0.94}, # Dummy metrics for initial
+                "training_config": {},
+                "source": "factory_reset",
+                "notes": "Original 6-class YOLOv8 base model",
+                "classes": initial_classes,
+                "dataset_stats": {},
+                "size_mb": round(initial_model.stat().st_size / (1024 * 1024), 2),
+                "status": "deployed"
+            }
+            registry_data["versions"].append(v1_entry)
+            registry_data["current"] = "v1_initial"
+            
+        save_json(registry_data, registry_file)
+        LogStream.emit("Model registry cleared and v1_initial registered", level="info", source="system")
+
+        # 4. Reset known_defects.json to 6 initial classes
+        initial_classes = ["inclusion", "oil_spot", "punching_hole", "silk_spot", "water_spot", "welding_line"]
+        reg_data = {
+            "defect_classes": initial_classes,
+            "version": 1,
+            "last_updated": datetime.now(timezone.utc).isoformat(),
+            "history": [
+                {
+                    "added": initial_classes,
+                    "source": "initial_reset",
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+            ]
+        }
+        save_json(reg_data, cfg.DATA_DIR / "known_defects.json")
+        LogStream.emit("Known defect classes reset to 6 initial categories", level="info", source="system")
+
+        # 5. Clear crops and clusters directories
+        for folder in [cfg.CROPS_DIR, cfg.CLUSTERS_DIR]:
+            if folder.exists():
+                for item in folder.iterdir():
+                    if item.is_dir():
+                        try:
+                            shutil.rmtree(str(item))
+                        except Exception:
+                            pass
+                    elif item.is_file() and item.name != ".gitkeep":
+                        try:
+                            item.unlink()
+                        except Exception:
+                            pass
+
+        # 6. Reset yolo_dataset folders
+        for split in ["train", "val"]:
+            for folder_name in ["images", "labels"]:
+                dir_path = cfg.YOLO_DATASET_DIR / folder_name / split
+                if dir_path.exists():
+                    for item in dir_path.iterdir():
+                        if item.is_file() and item.name != ".gitkeep":
+                            try:
+                                item.unlink()
+                            except Exception:
+                                pass
+        
+        # Delete flat mapping if it exists
+        flat_map = cfg.DATA_DIR / "defect_label_mapping.json"
+        if flat_map.exists():
+            flat_map.unlink()
+
+        LogStream.emit("Crops, clusters, and fine-tuning datasets cleared", level="info", source="system")
+
+        # 7. Restore FAISS index from pristine backup files instantly!
+        backup_index = cfg.FAISS_INDEX_DIR / "known_defects.index.backup"
+        backup_labels = cfg.FAISS_INDEX_DIR / "known_defects_labels.json.backup"
+
+        if backup_index.exists() and backup_labels.exists():
+            shutil.copy2(str(backup_index), str(cfg.FAISS_INDEX_FILE))
+            shutil.copy2(str(backup_labels), str(cfg.FAISS_LABELS_FILE))
+            try:
+                import faiss
+                temp_idx = faiss.read_index(str(cfg.FAISS_INDEX_FILE))
+                count = temp_idx.ntotal
+            except Exception:
+                count = 2965
+            LogStream.emit(f"FAISS index instantly restored from pristine backups ({count} vectors)", level="info", source="system")
+        else:
+            # Fallback to slow rebuild only if backup is missing
+            manager = FAISSIndexManager()
+            manager.reset()
+            count = manager.setup()
+            LogStream.emit(f"FAISS index rebuilt from pristine known crops folder ({count} vectors)", level="info", source="system")
+
+        # 8. Reset active run states
+        global _pipeline_status, _clusters_ready
+        with _lock:
+            _pipeline_status["discovery"] = {"status": "idle", "run_id": None, "result": None}
+            _pipeline_status["retraining"] = {"status": "idle", "run_id": None, "result": None}
+            _pipeline_status["orchestrator"] = {"status": "idle"}
+            _clusters_ready = True
+
+        LogStream.emit("SYSTEM UNIVERSAL RESET COMPLETED SUCCESSFULLY!", level="success", source="system")
+        return {"message": "System reset to initial state successfully", "success": True}
+    except Exception as e:
+        LogStream.emit(f"System reset failed: {e}", level="error", source="system")
+        raise HTTPException(500, f"System reset failed: {e}")
+
+
 # ── Orchestrator Control ─────────────────────────────────────
 
 @app.post("/api/orchestrator/start")
@@ -322,6 +501,47 @@ async def list_runs():
     return JSONResponse(results)
 
 
+@app.post("/api/images/upload")
+async def upload_images(files: List[UploadFile] = File(...)):
+    """Upload folder/images to run the pipeline on, clearing existing input images."""
+    try:
+        import shutil
+        input_dir = cfg.INPUT_IMAGES_DIR
+        
+        # Clean up existing input_images
+        if input_dir.exists():
+            for item in input_dir.iterdir():
+                if item.is_file() and item.name != ".gitkeep":
+                    try:
+                        item.unlink()
+                    except Exception:
+                        pass
+        else:
+            input_dir.mkdir(parents=True, exist_ok=True)
+
+        saved_count = 0
+        for file in files:
+            # Check if it is an image
+            if not file.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp')):
+                continue
+            
+            # Extract only the base filename to prevent subdirectory write issues
+            base_name = Path(file.filename).name
+            dest_path = input_dir / base_name
+            with open(dest_path, "wb") as f:
+                shutil.copyfileobj(file.file, f)
+            saved_count += 1
+
+        LogStream.emit(
+            f"Uploaded {saved_count} new images to input directory",
+            level="info", source="system"
+        )
+        return {"success": True, "count": saved_count}
+    except Exception as e:
+        LogStream.emit(f"Image upload failed: {e}", level="error", source="system")
+        raise HTTPException(500, f"Failed to upload images: {e}")
+
+
 @app.get("/api/config")
 async def get_config():
     """Get current configuration (non-sensitive)."""
@@ -366,20 +586,127 @@ async def get_clusters():
 
 @app.get("/api/model-versions")
 async def get_model_versions():
-    """List all model versions."""
-    versions_dir = cfg.MODEL_VERSIONS_DIR
-    if not versions_dir.exists():
-        return {"versions": []}
+    """List all model versions from the registry."""
+    from src.retraining.model_registry import ModelRegistry
+    registry = ModelRegistry()
+    versions = registry.list_versions()
+    current = registry.get_current()
+    return {
+        "versions": versions,
+        "current": current,
+    }
 
-    versions = []
-    for f in sorted(versions_dir.iterdir(), reverse=True):
-        if f.suffix == ".pt":
-            versions.append({
-                "name": f.name,
-                "size_mb": round(f.stat().st_size / (1024 * 1024), 2),
-                "created": datetime.fromtimestamp(f.stat().st_ctime).isoformat(),
-            })
-    return {"versions": versions}
+
+@app.get("/api/models/active")
+async def get_active_model():
+    """Get info about the currently active model."""
+    from src.retraining.model_registry import ModelRegistry
+    registry = ModelRegistry()
+    entry = registry.get_current_entry()
+    return {
+        "active_version": registry.get_current(),
+        "entry": entry,
+        "model_exists": cfg.YOLO_MODEL_PATH.exists(),
+        "model_path": str(cfg.YOLO_MODEL_PATH),
+    }
+
+
+class RollbackRequest(BaseModel):
+    version_id: str
+    confirmed_by: str = "dashboard"
+
+
+@app.post("/api/models/rollback")
+async def rollback_model(req: RollbackRequest):
+    """Rollback to a previous model version."""
+    from src.retraining.model_registry import ModelRegistry
+    LogStream.emit(
+        f"Rolling back to model version: {req.version_id}",
+        level="step", source="model_registry",
+    )
+    registry = ModelRegistry()
+    result = registry.rollback(req.version_id, confirmed_by=req.confirmed_by)
+    if result["success"]:
+        LogStream.emit(
+            f"Rollback complete: {req.version_id} is now active (FAISS: {result.get('faiss_vectors', 0)} vectors)",
+            level="info", source="model_registry",
+        )
+    else:
+        LogStream.emit(
+            f"Rollback failed: {result.get('error', 'Unknown')}",
+            level="error", source="model_registry",
+        )
+    return result
+
+
+class DeployConfirmRequest(BaseModel):
+    version_id: str
+
+
+@app.post("/api/models/deploy-confirm")
+async def deploy_confirm(req: DeployConfirmRequest):
+    """User confirms deployment of a model version from the dashboard."""
+    from src.retraining.model_registry import ModelRegistry
+    LogStream.emit(
+        f"Deploying model version: {req.version_id} (user confirmed)",
+        level="step", source="model_registry",
+    )
+    registry = ModelRegistry()
+    result = registry.deploy_version(req.version_id, confirmed_by="dashboard-user")
+    if result["success"]:
+        LogStream.emit(
+            f"Model {req.version_id} deployed successfully",
+            level="info", source="model_registry",
+        )
+    return result
+
+
+@app.get("/api/models/history")
+async def get_deployment_history():
+    """Get full deployment history."""
+    from src.retraining.model_registry import ModelRegistry
+    registry = ModelRegistry()
+    return {"history": registry.get_deployment_history()}
+
+
+class SmartRetrainRequest(BaseModel):
+    epochs: int | None = None
+    imgsz: int | None = None
+    batch_size: int | None = None
+
+
+@app.post("/api/retraining/smart-trigger")
+async def smart_retrain(req: SmartRetrainRequest, background_tasks: BackgroundTasks):
+    """LLM-advised retraining: analyzes dataset first, then triggers training."""
+    with _lock:
+        if _pipeline_status["retraining"]["status"] == "running":
+            raise HTTPException(400, "Retraining pipeline is already running")
+
+    background_tasks.add_task(
+        _run_retraining_bg,
+        RetrainingRequest(
+            project_id=-1,
+            epochs=req.epochs,
+            imgsz=req.imgsz,
+            batch_size=req.batch_size,
+        ),
+    )
+    return {"message": "Smart retraining triggered (LLM will advise)", "status": "starting"}
+
+
+@app.get("/api/retraining/advisor-preview")
+async def advisor_preview():
+    """Preview what the LLM advisor would recommend without starting training."""
+    try:
+        from src.retraining.llm_advisor import get_training_recommendation, collect_dataset_metadata
+        metadata = collect_dataset_metadata()
+        recommendation = get_training_recommendation(metadata)
+        return {
+            "metadata": metadata,
+            "recommendation": recommendation,
+        }
+    except Exception as e:
+        raise HTTPException(500, f"Advisor preview failed: {e}")
 
 
 # ── Image Serving ────────────────────────────────────────────

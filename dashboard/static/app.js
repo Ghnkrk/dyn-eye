@@ -86,11 +86,48 @@ function startLogStream() {
     };
 }
 
+let rightActiveTab = 'logs';
+
+function switchRightTab(tabId) {
+    rightActiveTab = tabId;
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.style.display = 'none');
+    
+    if (tabId === 'logs') {
+        document.getElementById('tab-btn-logs').classList.add('active');
+        document.getElementById('tab-content-logs').style.display = 'flex';
+    } else {
+        document.getElementById('tab-btn-train').classList.add('active');
+        document.getElementById('tab-content-train').style.display = 'flex';
+        // Hide red pulse dot
+        document.getElementById('train-pulse-dot').style.display = 'none';
+    }
+}
+
 function appendLog(evt) {
     if (!lastLogTs || evt.ts > lastLogTs) {
         lastLogTs = evt.ts;
     }
-    const body = document.getElementById('log-body');
+
+    // Intercept progress events (e.g. VLM annotation sequential image progress) for discovery nodes
+    if (evt.level === 'progress' && NODE_NAMES.includes(evt.source)) {
+        const detail = document.getElementById(`pd-${evt.source}`);
+        if (detail) {
+            detail.textContent = evt.message;
+        }
+        return;
+    }
+
+    const isTrainLog = evt.source === 'yolo_train' || evt.source === 'model_registry' || evt.source === 'system' || evt.source === 'llm_advisor';
+    const body = document.getElementById(isTrainLog ? 'train-log-body' : 'log-body');
+    if (!body) return;
+
+    // If first time receiving training logs, clear the default placeholder
+    if (isTrainLog && body.textContent.includes('[YOLO Retraining Terminal Idle]')) {
+        body.innerHTML = '';
+        document.getElementById('train-dot').style.background = 'var(--success)';
+    }
+
     const line = document.createElement('div');
     line.className = `log-line log-line--${evt.level}`;
 
@@ -102,9 +139,33 @@ function appendLog(evt) {
     `;
     body.appendChild(line);
 
-    // Auto-scroll if user hasn't scrolled up
-    if (logAutoScroll) {
-        body.scrollTop = body.scrollHeight;
+    // Auto-scroll
+    body.scrollTop = body.scrollHeight;
+
+    // Parse training progress metrics if available
+    if (isTrainLog) {
+        // Look for epoch messages: "Epoch 3/30" or similar
+        const epochMatch = evt.message.match(/epoch\s+(\d+)\/(\d+)/i) || evt.message.match(/Epoch\s+(\d+)/);
+        if (epochMatch) {
+            document.getElementById('val-train-epoch').textContent = epochMatch[1] + (epochMatch[2] ? '/' + epochMatch[2] : '');
+        }
+        // Look for loss messages: "loss: 0.2312" or similar
+        const lossMatch = evt.message.match(/loss:\s*([0-9.]+)/i);
+        if (lossMatch) {
+            document.getElementById('val-train-loss').textContent = parseFloat(lossMatch[1]).toFixed(4);
+            document.getElementById('val-train-loss').style.color = 'var(--error)';
+        }
+
+        // Highlight tab with pulsing red dot if not currently focused
+        if (rightActiveTab !== 'train') {
+            document.getElementById('train-pulse-dot').style.display = 'inline-block';
+        }
+
+        // Check if training completed successfully
+        if (evt.message.includes('retraining pipeline finished') || evt.message.includes('deployed successfully')) {
+            document.getElementById('train-dot').style.background = 'var(--text-secondary)';
+            loadModelVersions();
+        }
     }
 
     // Keep max 500 lines in DOM
@@ -117,17 +178,24 @@ function escapeHtml(s) {
     return d.innerHTML;
 }
 
-// Track if user scrolled up
+// Track scroll status
 document.addEventListener('DOMContentLoaded', () => {
     const body = document.getElementById('log-body');
-    body.addEventListener('scroll', () => {
-        logAutoScroll = body.scrollTop + body.clientHeight >= body.scrollHeight - 30;
-    });
+    if (body) {
+        body.addEventListener('scroll', () => {
+            logAutoScroll = body.scrollTop + body.clientHeight >= body.scrollHeight - 30;
+        });
+    }
 });
 
 function clearLogs() {
     const body = document.getElementById('log-body');
-    body.innerHTML = '';
+    if (body) body.innerHTML = '';
+}
+
+function clearTrainLogs() {
+    const body = document.getElementById('train-log-body');
+    if (body) body.innerHTML = '<span style="color: #64748b;">[YOLO Retraining Terminal Cleared]</span>';
 }
 
 // ── Pipeline Status from Logs ───────────────────────────────
@@ -215,73 +283,36 @@ async function triggerDiscovery() {
     const btn = document.getElementById('btn-discover');
     btn.disabled = true;
 
-    const useSampleRun = document.getElementById('in-sample-run').checked;
     const useCache = document.getElementById('in-use-cache').checked;
 
     try {
         hasDiscoveryRunThisSession = true;
         await post('/api/discovery/trigger', {
-            use_sample_run: useSampleRun,
+            use_sample_run: false,
             use_cache: useCache,
         });
-        toast(`Discovery pipeline started${useCache ? ' (cache mode)' : ''}`, 'success');
+        toast(`Pipeline started${useCache ? ' (cache mode)' : ''}`, 'success');
     } catch (e) {
         toast(`Failed: ${e.message}`, 'error');
         btn.disabled = false;
     }
 }
 
-async function setupFAISS() {
-    try {
-        toast('Building FAISS index...', 'info');
-        const r = await post('/api/faiss/setup', {});
-        toast(`FAISS: ${r.count} vectors indexed`, 'success');
-    } catch (e) {
-        toast(`FAISS failed: ${e.message}`, 'error');
-    }
-}
-
-let orchRunning = false;
-
-async function toggleOrchestrator() {
-    const btn = document.getElementById('btn-orch');
-    try {
-        if (!orchRunning) {
-            await post('/api/orchestrator/start', { project_id: 1 });
-            orchRunning = true;
-            btn.textContent = '🛑 Stop Orchestrator';
-            btn.classList.remove('btn--outline');
-            btn.classList.add('btn--danger');
-            toast('Orchestrator started', 'success');
-        } else {
-            await post('/api/orchestrator/stop');
-            orchRunning = false;
-            btn.textContent = '🤖 Start Orchestrator';
-            btn.classList.remove('btn--danger');
-            btn.classList.add('btn--outline');
-            toast('Orchestrator stopped', 'info');
-        }
-    } catch (e) {
-        toast(`Orchestrator: ${e.message}`, 'error');
-    }
-}
-
 // ── Data Loading ────────────────────────────────────────────
 async function loadStats() {
     try {
-        const [cfg, clusters, versions, runs] = await Promise.all([
+        const [cfg, clusters, versions] = await Promise.all([
             get('/api/config'),
             get('/api/clusters'),
             get('/api/model-versions'),
-            get('/api/runs'),
         ]);
 
         document.getElementById('s-images').textContent = cfg.input_images_count || '0';
         document.getElementById('s-clusters').textContent = (clusters.clusters || []).length || '0';
         document.getElementById('s-models').textContent = (versions.versions || []).length || '0';
-        document.getElementById('s-runs').textContent = (runs || []).length || '0';
 
         const known = cfg.known_defect_names || [];
+        document.getElementById('s-known').textContent = known.length || '0';
         document.getElementById('cfg-known-defects').textContent = known.length ? known.join(', ') : 'None';
 
         // Only render clusters if pipeline isn't running and discovery has run in this session
@@ -376,6 +407,9 @@ async function submitClusterNames() {
         document.getElementById('cluster-save-status').textContent =
             `✓ ${r.total_labeled_crops} crops mapped to defect labels`;
         document.getElementById('cluster-save-status').style.color = 'var(--success)';
+        
+        // Trigger Retraining Advisor panel immediately
+        showLLMAdvisorRetrainWorkflow();
     } catch (e) {
         toast(`Failed to save names: ${e.message}`, 'error');
     }
@@ -385,15 +419,6 @@ async function submitClusterNames() {
 async function pollStatus() {
     try {
         const s = await get('/api/status');
-        // Update orchestrator button state
-        if (s.orchestrator && s.orchestrator.status === 'running') {
-            orchRunning = true;
-            const btn = document.getElementById('btn-orch');
-            btn.textContent = '🛑 Stop Orchestrator';
-            btn.classList.remove('btn--outline');
-            btn.classList.add('btn--danger');
-        }
-
         // Update discovery button
         if (s.discovery) {
             if (s.discovery.status === 'running') {
@@ -618,16 +643,407 @@ async function triggerRetraining() {
     }
 }
 
+// ── Model Management ────────────────────────────────────────
+
+async function loadModelVersions() {
+    try {
+        const data = await get('/api/model-versions');
+        const versions = data.versions || [];
+        const current = data.current;
+        renderModelVersions(versions, current);
+
+        // Update active model pill
+        const pill = document.getElementById('model-active-pill');
+        const text = document.getElementById('model-active-text');
+        if (current) {
+            pill.className = 'status-pill status-pill--complete';
+            text.textContent = current;
+        } else {
+            pill.className = 'status-pill status-pill--idle';
+            text.textContent = 'No active model';
+        }
+
+        // Update stats card
+        document.getElementById('s-models').textContent = versions.length || '0';
+    } catch (e) {
+        console.error('Model versions load failed:', e);
+    }
+}
+
+function renderModelVersions(versions, current) {
+    const grid = document.getElementById('model-versions-grid');
+    if (!versions.length) {
+        grid.innerHTML = `
+            <div class="empty" style="grid-column:1/-1">
+                <div class="empty-icon">📦</div>
+                <div>No model versions registered yet</div>
+            </div>`;
+        return;
+    }
+
+    let html = '';
+    for (const v of versions) {
+        const isActive = v.version_id === current;
+        const metrics = v.metrics || {};
+        const classes = v.classes || [];
+        const created = v.created_at ? new Date(v.created_at).toLocaleString() : v.timestamp || '—';
+
+        // Metrics badges
+        let metricsHtml = '';
+        if (Object.keys(metrics).length) {
+            metricsHtml = '<div class="model-metrics">';
+            for (const [k, val] of Object.entries(metrics)) {
+                const display = typeof val === 'number' ? (val * 100).toFixed(1) + '%' : val;
+                metricsHtml += `<span class="model-metric">
+                    <span class="model-metric-label">${k}:</span>
+                    <span class="model-metric-value">${display}</span>
+                </span>`;
+            }
+            metricsHtml += '</div>';
+        }
+
+        // Class tags
+        let classesHtml = '';
+        if (classes.length) {
+            classesHtml = '<div class="model-classes">';
+            classes.forEach(c => {
+                classesHtml += `<span class="model-class-tag">${escapeHtml(c)}</span>`;
+            });
+            classesHtml += '</div>';
+        }
+
+        // Action buttons
+        let actionsHtml = '<div class="model-card-actions">';
+        if (!isActive) {
+            actionsHtml += `<button class="btn btn--success btn--sm" onclick="deployModel('${v.version_id}')">🚀 Deploy</button>`;
+            actionsHtml += `<button class="btn btn--outline btn--sm" onclick="rollbackModel('${v.version_id}')">↩️ Rollback</button>`;
+        }
+        actionsHtml += `<button class="btn btn--outline btn--sm" onclick="showModelDetails('${v.version_id}')">📋 Details</button>`;
+        actionsHtml += '</div>';
+
+        html += `
+        <div class="model-card${isActive ? ' model-card--active' : ''}">
+            <div class="model-card-title">${v.version_id}</div>
+            <div class="model-card-meta">
+                <span>📅 ${created}</span>
+                <span>💾 ${v.size_mb || '?'} MB</span>
+                <span>🔧 ${v.source || 'unknown'}</span>
+            </div>
+            ${metricsHtml}
+            ${classesHtml}
+            ${actionsHtml}
+        </div>`;
+    }
+
+    grid.innerHTML = html;
+}
+
+async function deployModel(versionId) {
+    if (!confirm(`Deploy model version ${versionId} as the active model?`)) return;
+    try {
+        toast(`Deploying ${versionId}...`, 'info');
+        const r = await post('/api/models/deploy-confirm', { version_id: versionId });
+        if (r.success) {
+            toast(`Model ${versionId} deployed successfully!`, 'success');
+            loadModelVersions();
+        } else {
+            toast(`Deploy failed: ${r.error}`, 'error');
+        }
+    } catch (e) {
+        toast(`Deploy failed: ${e.message}`, 'error');
+    }
+}
+
+async function rollbackModel(versionId) {
+    if (!confirm(`Rollback to model version ${versionId}? This will replace the current active model and rebuild FAISS.`)) return;
+    try {
+        toast(`Rolling back to ${versionId}...`, 'info');
+        const r = await post('/api/models/rollback', { version_id: versionId });
+        if (r.success) {
+            toast(`Rolled back to ${versionId} (FAISS: ${r.faiss_vectors} vectors)`, 'success');
+            loadModelVersions();
+        } else {
+            toast(`Rollback failed: ${r.error}`, 'error');
+        }
+    } catch (e) {
+        toast(`Rollback failed: ${e.message}`, 'error');
+    }
+}
+
+function showModelDetails(versionId) {
+    // Find version from loaded data
+    get('/api/model-versions').then(data => {
+        const v = (data.versions || []).find(x => x.version_id === versionId);
+        if (!v) { toast('Version not found', 'error'); return; }
+
+        const modal = document.getElementById('model-modal');
+        const title = document.getElementById('model-modal-title');
+        const body = document.getElementById('model-modal-body');
+
+        title.textContent = `Model: ${v.version_id}`;
+
+        let html = `
+        <div class="advisor-section">
+            <div class="advisor-section-title">📋 General Info</div>
+            <div class="advisor-params">
+                <span class="advisor-param-key">Version:</span>
+                <span class="advisor-param-val">${v.version_id}</span>
+                <span class="advisor-param-key">Created:</span>
+                <span class="advisor-param-val">${v.created_at || v.timestamp || '—'}</span>
+                <span class="advisor-param-key">Size:</span>
+                <span class="advisor-param-val">${v.size_mb || '?'} MB</span>
+                <span class="advisor-param-key">Source:</span>
+                <span class="advisor-param-val">${v.source || 'unknown'}</span>
+                <span class="advisor-param-key">Status:</span>
+                <span class="advisor-param-val">${v.status || '—'}</span>
+            </div>
+        </div>`;
+
+        // Metrics
+        const metrics = v.metrics || {};
+        if (Object.keys(metrics).length) {
+            html += `<div class="advisor-section">
+                <div class="advisor-section-title">📊 Metrics</div>
+                <div class="advisor-params">`;
+            for (const [k, val] of Object.entries(metrics)) {
+                const display = typeof val === 'number' ? (val * 100).toFixed(1) + '%' : val;
+                html += `<span class="advisor-param-key">${k}:</span>
+                         <span class="advisor-param-val">${display}</span>`;
+            }
+            html += '</div></div>';
+        }
+
+        // Training config
+        const cfg = v.training_config || {};
+        if (Object.keys(cfg).length) {
+            html += `<div class="advisor-section">
+                <div class="advisor-section-title">⚙️ Training Config</div>
+                <div class="advisor-params">`;
+            for (const [k, val] of Object.entries(cfg)) {
+                html += `<span class="advisor-param-key">${k}:</span>
+                         <span class="advisor-param-val">${val}</span>`;
+            }
+            html += '</div></div>';
+        }
+
+        // Notes
+        if (v.notes) {
+            html += `<div class="advisor-section">
+                <div class="advisor-section-title">📝 Notes</div>
+                <p style="font-size:0.8rem; color:var(--text-secondary);">${escapeHtml(v.notes)}</p>
+            </div>`;
+        }
+
+        body.innerHTML = html;
+        modal.classList.add('active');
+    });
+}
+
+function closeModelModal() {
+    document.getElementById('model-modal').classList.remove('active');
+}
+
 
 // ── Init ────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
     loadTheme();
     loadStats();
+    loadModelVersions();
     loadRecentLogs();
     startLogStream();
     pollStatus();
 
+    // Cache vs Upload row interactions
+    const cacheCheckbox = document.getElementById('in-use-cache');
+    if (cacheCheckbox) {
+        cacheCheckbox.addEventListener('change', (e) => {
+            const uploadRow = document.getElementById('upload-row');
+            if (e.target.checked) {
+                uploadRow.style.opacity = '0.4';
+                uploadRow.style.pointerEvents = 'none';
+                document.getElementById('upload-status').textContent = 'Using cached annotations (upload skipped)';
+            } else {
+                uploadRow.style.opacity = '1';
+                uploadRow.style.pointerEvents = 'auto';
+                document.getElementById('upload-status').textContent = 'Using default input dataset (80 images)';
+                document.getElementById('upload-input').value = '';
+            }
+        });
+    }
+
     // Periodic stats refresh (every 15s)
     setInterval(loadStats, 15000);
+    setInterval(loadModelVersions, 30000);
     setInterval(pollStatus, 5000);
 });
+
+// ── Upload & Camera Helpers ──────────────────────────────────
+async function handleImageUpload(event) {
+    const files = event.target.files;
+    if (!files || files.length === 0) return;
+
+    const statusEl = document.getElementById('upload-status');
+    statusEl.innerHTML = `⏳ Uploading ${files.length} images...`;
+    
+    const formData = new FormData();
+    for (let i = 0; i < files.length; i++) {
+        formData.append('files', files[i]);
+    }
+
+    try {
+        const response = await fetch('/api/images/upload', {
+            method: 'POST',
+            body: formData
+        });
+        if (!response.ok) throw new Error(response.statusText);
+        const result = await response.json();
+        statusEl.innerHTML = `✅ Loaded ${result.count} images successfully`;
+        toast(`Uploaded ${result.count} images for pipeline run`, 'success');
+        
+        // Refresh input image count stat
+        loadStats();
+    } catch (e) {
+        statusEl.innerHTML = `❌ Upload failed: ${e.message}`;
+        toast(`Upload failed: ${e.message}`, 'error');
+    }
+}
+
+function triggerCameraFeedDemo() {
+    toast('Live Metrology Camera Feed: Offline (Demo Mode — Standby)', 'warning');
+}
+
+
+// ── MLOps Retraining Console Workflow ───────────────────────
+let activeAdvisorConfig = null;
+
+async function showLLMAdvisorRetrainWorkflow() {
+    switchRightTab('train');
+    const card = document.getElementById('train-advisor-card');
+    const content = document.getElementById('train-advisor-content');
+    
+    if (!card || !content) return;
+    
+    card.style.display = 'block';
+    card.style.animation = 'pulse 1.5s 2';
+    content.innerHTML = `<span style="color:var(--text-secondary);">Querying Gemini Retraining Advisor...</span>`;
+    
+    try {
+        const data = await get('/api/retraining/advisor-preview');
+        const rec = data.recommendation || {};
+        const meta = data.metadata || {};
+        
+        activeAdvisorConfig = rec.config || { epochs: 30, imgsz: 640, batch_size: 16 };
+        
+        content.innerHTML = `
+            <div style="font-weight:bold; margin-bottom: 6px; color: ${rec.should_train ? 'var(--success)' : 'var(--error)'};">
+                ${rec.should_train ? '✅ Recommended to Train' : '⚠️ Not Recommended to Train'}
+            </div>
+            <div style="font-size:12px; margin-bottom:8px;">${escapeHtml(rec.reason || '')}</div>
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:6px; background:rgba(0,0,0,0.03); padding:8px; border-radius:6px; border:1px solid var(--border); font-size:11px;">
+                <div>📦 Classes: <strong>${meta.num_classes || 0}</strong></div>
+                <div>🖼️ Total Crops: <strong>${meta.total_crops || 0}</strong></div>
+                <div>⏱️ Epochs: <strong>${activeAdvisorConfig.epochs || activeAdvisorConfig.epochs || 30}</strong></div>
+                <div>📐 Image Size: <strong>${activeAdvisorConfig.imgsz || 640}</strong></div>
+            </div>
+        `;
+    } catch (e) {
+        content.innerHTML = `<span style="color:var(--error);">Failed to load advisor recommendation: ${escapeHtml(e.message)}</span>`;
+    }
+}
+
+async function acceptAdvisorRecommendation() {
+    const card = document.getElementById('train-advisor-card');
+    if (card) card.style.display = 'none';
+    
+    toast('Starting retraining with Advisor parameters...', 'info');
+    
+    const params = activeAdvisorConfig || { epochs: 30, imgsz: 640, batch_size: 16 };
+    try {
+        const body = {
+            epochs: params.epochs || 30,
+            imgsz: params.imgsz || 640,
+            batch_size: params.batch || params.batch_size || 16
+        };
+        await post('/api/retraining/smart-trigger', body);
+        toast('YOLO fine-tuning started!', 'success');
+    } catch (e) {
+        toast(`Training failed to start: ${e.message}`, 'error');
+        if (card) card.style.display = 'block';
+    }
+}
+
+function openCustomizeModal() {
+    const modal = document.getElementById('model-modal');
+    const title = document.getElementById('model-modal-title');
+    const body = document.getElementById('model-modal-body');
+    
+    title.textContent = '⚙️ Customize YOLO Retraining Parameters';
+    
+    body.innerHTML = `
+    <div style="display:flex; flex-direction:column; gap:12px; font-size:14px; color:var(--text-primary);">
+        <div class="input-group">
+            <label style="font-weight:bold; display:block; margin-bottom:4px;">Epochs</label>
+            <input type="number" id="cust-epochs" value="30" min="1" max="300" style="width:100%; padding:8px; border-radius:4px; border:1px solid var(--border); background:var(--bg-secondary); color:var(--text-primary);" />
+        </div>
+        <div class="input-group">
+            <label style="font-weight:bold; display:block; margin-bottom:4px;">Image Size (imgsz)</label>
+            <input type="number" id="cust-imgsz" value="640" min="32" max="1280" style="width:100%; padding:8px; border-radius:4px; border:1px solid var(--border); background:var(--bg-secondary); color:var(--text-primary);" />
+        </div>
+        <div class="input-group">
+            <label style="font-weight:bold; display:block; margin-bottom:4px;">Batch Size</label>
+            <input type="number" id="cust-batch" value="16" min="1" max="128" style="width:100%; padding:8px; border-radius:4px; border:1px solid var(--border); background:var(--bg-secondary); color:var(--text-primary);" />
+        </div>
+        <div class="flex gap-sm" style="margin-top:12px;">
+            <button class="btn btn--primary" onclick="submitCustomRetraining()">🚀 Start Retraining</button>
+            <button class="btn btn--outline" onclick="closeModelModal()">Cancel</button>
+        </div>
+    </div>
+    `;
+    modal.classList.add('active');
+}
+
+async function submitCustomRetraining() {
+    const epochs = parseInt(document.getElementById('cust-epochs').value) || 30;
+    const imgsz = parseInt(document.getElementById('cust-imgsz').value) || 640;
+    const batch = parseInt(document.getElementById('cust-batch').value) || 16;
+    
+    closeModelModal();
+    const card = document.getElementById('train-advisor-card');
+    if (card) card.style.display = 'none';
+    
+    toast(`Starting custom training (Epochs: ${epochs}, Image Size: ${imgsz}, Batch: ${batch})...`, 'info');
+    
+    try {
+        await post('/api/retraining/smart-trigger', {
+            epochs: epochs,
+            imgsz: imgsz,
+            batch_size: batch
+        });
+        toast('Custom YOLO fine-tuning triggered!', 'success');
+    } catch (e) {
+        toast(`Training failed: ${e.message}`, 'error');
+        if (card) card.style.display = 'block';
+    }
+}
+
+async function triggerFactoryReset() {
+    if (!confirm('⚠️ SYSTEM FACTORY RESET WARNING:\n\nThis will completely reset the DYN-EYE system back to its initial state:\n- Swaps active model back to YOLO v1.\n- Sets known defect categories to 6 initial classes.\n- Deletes all fine-tuned model versions and history.\n- Clears all crop & cluster directories.\n- Rebuilds a clean FAISS index from the 6 initial classes.\n\nAre you absolutely sure you want to proceed?')) {
+        return;
+    }
+    try {
+        toast('Factory resetting system...', 'info');
+        const r = await post('/api/system/reset-all', {});
+        if (r.success) {
+            toast('System factory reset successfully!', 'success');
+            document.getElementById('log-body').innerHTML = '';
+            document.getElementById('train-log-body').innerHTML = '<span style="color: #64748b;">[YOLO Retraining Terminal Idle]</span>';
+            document.getElementById('val-train-epoch').textContent = '—';
+            document.getElementById('val-train-loss').textContent = '—';
+            // Reload all data
+            hasDiscoveryRunThisSession = false;
+            await Promise.all([loadStats(), loadModelVersions()]);
+        }
+    } catch (e) {
+        toast(`Reset failed: ${e.message}`, 'error');
+    }
+}

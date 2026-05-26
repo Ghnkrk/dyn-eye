@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="DYN-EYE — Autonomous Anomaly Discovery and Self-Learning Detection Pipeline">
     <title>DYN-EYE — Defect Discovery</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/style.css?v=3.0.1">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔬</text></svg>">
 </head>
 <body>
@@ -26,6 +26,9 @@
                 <span id="global-text">Idle</span>
             </div>
             <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme" id="theme-btn">🌙</button>
+            <button class="btn btn--danger btn--sm" onclick="triggerFactoryReset()" title="Reset to initial state: YOLO v1, 6 classes, clean FAISS" style="font-size: 0.72rem;">
+                ⚠️ Factory Reset
+            </button>
         </div>
     </header>
 
@@ -51,8 +54,8 @@
         </div>
         <div class="card">
             <div class="stat">
-                <div class="stat-value" id="s-runs">—</div>
-                <div class="stat-label">Pipeline Runs</div>
+                <div class="stat-value" id="s-known">—</div>
+                <div class="stat-label">Known Defects</div>
             </div>
         </div>
     </div>
@@ -73,20 +76,11 @@
                 </div>
 
                 <div class="input-row mb-md">
-                    <div class="input-group">
+                    <div class="input-group" style="flex: 2;">
                         <label>Known Defects (Auto-sync)</label>
                         <div id="cfg-known-defects" class="text-mono text-sm mt-sm" style="color:var(--text-secondary)">Loading...</div>
                     </div>
-                    <div class="input-group" style="max-width:100px">
-                        <label>Sample Run</label>
-                        <div class="mt-sm">
-                            <label class="toggle-switch">
-                                <input type="checkbox" id="in-sample-run">
-                                <span class="toggle-slider"></span>
-                            </label>
-                        </div>
-                    </div>
-                    <div class="input-group" style="max-width:100px">
+                    <div class="input-group" style="max-width:100px; flex: 1;">
                         <label>Use Cache</label>
                         <div class="mt-sm">
                             <label class="toggle-switch">
@@ -97,18 +91,25 @@
                     </div>
                 </div>
 
-                <div class="flex gap-sm" style="flex-wrap: wrap;">
+                <div class="input-row mb-md" id="upload-row" style="transition: opacity var(--ease); border-top: 1px solid var(--border); padding-top: 12px; margin-top: 12px;">
+                    <div class="input-group" style="width: 100%;">
+                        <label>Custom Image Dataset Upload</label>
+                        <div style="display: flex; gap: 10px; align-items: center; margin-top: 6px;">
+                            <label class="btn btn--outline btn--sm" style="cursor: pointer; display: flex; align-items: center; gap: 6px; font-size: 0.75rem; padding: 6px 12px; margin: 0; background: var(--bg-elevated);">
+                                📁 Select Image Folder
+                                <input type="file" id="upload-input" webkitdirectory directory multiple accept="image/*" style="display: none;" onchange="handleImageUpload(event)">
+                            </label>
+                            <span id="upload-status" class="text-xs" style="color: var(--text-muted); font-style: italic;">Using default input dataset (80 images)</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="flex gap-sm" style="border-top: 1px solid var(--border); padding-top: 12px; margin-top: 12px; align-items: center;">
                     <button class="btn btn--primary" id="btn-discover" onclick="triggerDiscovery()">
-                        ▶ Run Discovery
+                        ▶ Run Pipeline
                     </button>
-                    <button class="btn btn--outline btn--sm" onclick="setupFAISS()">
-                        Setup FAISS
-                    </button>
-                    <button class="btn btn--outline btn--sm" id="btn-orch" onclick="toggleOrchestrator()">
-                        🤖 Start Orchestrator
-                    </button>
-                    <button class="btn btn--success" id="btn-retrain" onclick="triggerRetraining()" style="margin-left: auto;">
-                        🚀 Train YOLO Model
+                    <button class="btn btn--outline" id="btn-camera" onclick="triggerCameraFeedDemo()" style="display: flex; align-items: center; gap: 6px; border-color: var(--warning); color: var(--warning); padding: 8px 16px;">
+                        🎥 Camera Feed
                     </button>
                 </div>
             </div>
@@ -200,22 +201,97 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Model Management Section -->
+            <div class="section">
+                <div class="section-title" style="display:flex; align-items:center; gap:12px;">
+                    Model Registry
+                    <span class="status-pill status-pill--idle" id="model-active-pill" style="font-size:12px;">
+                        <span class="status-dot"></span>
+                        <span id="model-active-text">No active model</span>
+                    </span>
+                </div>
+                <div id="model-versions-grid" class="model-versions-grid">
+                    <div class="empty" style="grid-column:1/-1">
+                        <div class="empty-icon">📦</div>
+                        <div>No model versions registered yet</div>
+                    </div>
+                </div>
+            </div>
         </div>
 
-        <!-- RIGHT PANEL: Live Log Stream -->
+        <!-- RIGHT PANEL: MLOps Control & Terminals -->
         <div class="log-viewer" id="log-viewer">
-            <div class="log-header">
-                <div class="log-title">
-                    <div class="log-live-dot" id="log-dot"></div>
-                    Live Pipeline Logs
+            <div class="log-header" style="padding: 0; display: flex; flex-direction: column; border-bottom: 1px solid var(--border);">
+                <!-- Tabs Header -->
+                <div class="tabs-header" style="display: flex; width: 100%;">
+                    <button class="tab-btn active" id="tab-btn-logs" onclick="switchRightTab('logs')" style="flex: 1; padding: 12px; background: none; border: none; border-bottom: 2px solid var(--accent); color: var(--text-primary); font-weight: bold; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 14px;">
+                        🖥️ Pipeline Logs
+                    </button>
+                    <button class="tab-btn" id="tab-btn-train" onclick="switchRightTab('train')" style="flex: 1; padding: 12px; background: none; border: none; border-bottom: 2px solid transparent; color: var(--text-secondary); font-weight: bold; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 14px; position: relative;">
+                        🚀 Retraining
+                        <span id="train-pulse-dot" class="status-dot" style="display: none; background: #ef4444; width: 8px; height: 8px; border-radius: 50%; position: absolute; top: 12px; right: 16px; animation: pulse 1.5s infinite;"></span>
+                    </button>
                 </div>
-                <button class="btn btn--outline btn--sm" onclick="clearLogs()">Clear</button>
             </div>
-            <div class="log-body" id="log-body">
-                <div class="log-line">
-                    <span class="log-ts">--:--:--</span>
-                    <span class="log-src">system</span>
-                    <span class="log-msg">Waiting for pipeline events...</span>
+
+            <!-- TAB CONTENT 1: Pipeline Logs -->
+            <div class="tab-content active" id="tab-content-logs" style="height: calc(100% - 46px); display: flex; flex-direction: column;">
+                <div class="log-header" style="border-bottom: none; padding: 10px 16px; min-height: 40px;">
+                    <div class="log-title">
+                        <div class="log-live-dot" id="log-dot"></div>
+                        Live Pipeline Events
+                    </div>
+                    <button class="btn btn--outline btn--sm" onclick="clearLogs()">Clear</button>
+                </div>
+                <div class="log-body" id="log-body" style="flex: 1; overflow-y: auto;">
+                    <div class="log-line">
+                        <span class="log-ts">--:--:--</span>
+                        <span class="log-src">system</span>
+                        <span class="log-msg">Waiting for pipeline events...</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TAB CONTENT 2: YOLO Retraining Terminal -->
+            <div class="tab-content" id="tab-content-train" style="height: calc(100% - 46px); display: none; flex-direction: column;">
+                <div class="log-header" style="border-bottom: none; padding: 10px 16px; min-height: 40px;">
+                    <div class="log-title">
+                        <div class="log-live-dot" id="train-dot" style="background: var(--text-secondary);"></div>
+                        Fine-tuning Monitor
+                    </div>
+                    <button class="btn btn--outline btn--sm" onclick="clearTrainLogs()">Clear</button>
+                </div>
+                <div class="train-container" style="flex: 1; display: flex; flex-direction: column; padding: 12px; gap: 12px; overflow-y: auto; background: var(--bg-card);">
+                    
+                    <!-- Advisor Panel -->
+                    <div class="advisor-card" id="train-advisor-card" style="background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 8px; padding: 12px; display: none;">
+                        <h4 style="margin: 0 0 6px 0; color: var(--accent); display: flex; align-items: center; gap: 6px;">💡 LLM Advisor Recommendation</h4>
+                        <div id="train-advisor-content" style="font-size: 13px; color: var(--text-primary); line-height: 1.4; margin-bottom: 10px;">Analyzing...</div>
+                        <div class="flex gap-sm">
+                            <button class="btn btn--success btn--sm" id="btn-advisor-accept" onclick="acceptAdvisorRecommendation()">🚀 Start Training</button>
+                            <button class="btn btn--outline btn--sm" onclick="openCustomizeModal()">⚙️ Customize</button>
+                        </div>
+                    </div>
+
+                    <!-- Live Metrics Widgets -->
+                    <div id="train-widgets" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                        <div class="card" style="padding: 10px; background: rgba(0,0,0,0.03); border: 1px solid var(--border);">
+                            <div style="font-size: 11px; color: var(--text-secondary); text-transform: uppercase;">Current Epoch</div>
+                            <div id="val-train-epoch" style="font-size: 20px; font-weight: bold; margin-top: 4px;">—</div>
+                        </div>
+                        <div class="card" style="padding: 10px; background: rgba(0,0,0,0.03); border: 1px solid var(--border);">
+                            <div style="font-size: 11px; color: var(--text-secondary); text-transform: uppercase;">Training Loss</div>
+                            <div id="val-train-loss" style="font-size: 20px; font-weight: bold; margin-top: 4px; color: var(--error);">—</div>
+                        </div>
+                    </div>
+
+                    <!-- Retraining Log Screen -->
+                    <div class="train-log-screen" style="flex: 1; min-height: 180px; background: #0f172a; border-radius: 8px; border: 1px solid #1e293b; padding: 12px; font-family: Consolas, Monaco, monospace; font-size: 12px; color: #38bdf8; overflow-y: auto; display: flex; flex-direction: column; gap: 4px;">
+                        <div id="train-log-body">
+                            <span style="color: #64748b;">[Retraining Terminal Idle]</span>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -232,7 +308,6 @@
             <button class="modal-close" onclick="closeClusterModal()">&times;</button>
         </div>
         <div class="modal-body" id="cluster-modal-body">
-            <!-- Dynamic grid of crop cards with actions -->
         </div>
         <div class="modal-footer">
             <button class="btn btn--outline" onclick="closeClusterModal()">Done</button>
@@ -240,8 +315,23 @@
     </div>
 </div>
 
+<!-- Model Details / Advisor Preview Modal -->
+<div class="modal" id="model-modal">
+    <div class="modal-content" style="max-width:600px;">
+        <div class="modal-header">
+            <h3 class="modal-title" id="model-modal-title">Model Details</h3>
+            <button class="modal-close" onclick="closeModelModal()">&times;</button>
+        </div>
+        <div class="modal-body" id="model-modal-body">
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn--outline" onclick="closeModelModal()">Close</button>
+        </div>
+    </div>
+</div>
+
 <div class="toast-wrap" id="toast-wrap"></div>
 
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=3.0.1"></script>
 </body>
 </html>

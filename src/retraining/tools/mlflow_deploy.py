@@ -79,15 +79,27 @@ def deploy_model(
             # Log the model artifact
             mlflow.log_artifact(src_model, artifact_path="model")
 
-            # Register model
-            model_uri = f"runs:/{run_id}/model"
-            result = mlflow.register_model(model_uri, model_name)
+            # Register model via MlflowClient to support raw artifact files directly
+            client = mlflow.tracking.MlflowClient()
+            try:
+                client.create_registered_model(model_name)
+            except Exception:
+                # Already exists
+                pass
+
+            # Construct direct artifact path source URI
+            artifact_uri = f"{run.info.artifact_uri}/model/{Path(src_model).name}"
+            
+            result = client.create_model_version(
+                name=model_name,
+                source=artifact_uri,
+                run_id=run_id,
+            )
             version = result.version
 
             log.info(f"Registered as {model_name} v{version}")
 
             # Transition to Production
-            client = mlflow.tracking.MlflowClient()
             client.transition_model_version_stage(
                 name=model_name,
                 version=version,

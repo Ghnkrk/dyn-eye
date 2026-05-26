@@ -205,18 +205,39 @@ def run_discovery_pipeline(
     # ── Cache vs. Fresh run ──────────────────────────────────
     if use_cache:
         log.info("Cache mode enabled — will reuse existing crops and VLM annotations.")
-        # Load VLM cache if available (for metadata propagation)
         cache_path = cfg.DATA_DIR / "vlm_cache.json"
+        cache_valid = False
         if cache_path.exists():
             try:
                 import json
                 with open(cache_path, "r") as f:
                     cached_ann = json.load(f)
                 cached_ann = _remap_cache_paths(cached_ann)
-                initial_state["vlm_annotations"] = cached_ann
-                log.info(f"Loaded {len(cached_ann)} cached VLM annotations (paths remapped).")
+                # Validate cache: at least some annotations must have findings
+                has_findings = any(
+                    len(ann.get("findings", [])) > 0 for ann in cached_ann
+                )
+                if has_findings:
+                    initial_state["vlm_annotations"] = cached_ann
+                    log.info(f"Loaded {len(cached_ann)} cached VLM annotations (paths remapped).")
+                    cache_valid = True
+                else:
+                    log.warning(
+                        "VLM cache exists but has 0 findings across all annotations. "
+                        "Cache is stale — falling back to fresh pipeline run."
+                    )
+                    LogStream.emit(
+                        "VLM cache is stale (no findings). Switching to fresh run...",
+                        level="warning", source="pipeline",
+                    )
             except Exception as e:
-                log.warning(f"Failed to load VLM cache: {e}. Crop files will still be used.")
+                log.warning(f"Failed to load VLM cache: {e}.")
+
+        if not cache_valid:
+            log.info("Cache invalid or not found — running fresh pipeline.")
+            use_cache = False
+            initial_state["use_cache"] = False
+            _clean_previous_run()
     else:
         log.info("Fresh run — cleaning previous crops and clusters.")
         _clean_previous_run()

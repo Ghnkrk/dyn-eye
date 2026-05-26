@@ -159,18 +159,21 @@ def vlm_annotation_node(state: dict) -> dict:
         temperature=cfg.VLM_TEMPERATURE,
     )
 
+    from src.utils import LogStream
+
     annotations: list[dict] = []
     for idx, img_path in enumerate(unknown_paths):
-        log.info(f"[VLM] Processing {idx+1}/{len(unknown_paths)}: {Path(img_path).name}")
+        msg = f"[VLM] Processing image {idx+1}/{len(unknown_paths)}: {Path(img_path).name}"
+        log.info(msg)
+        LogStream.emit(msg, level="progress", source="vlm_annotation")
         result = _annotate_single_image(client, gen_config, img_path)
         annotations.append(result)
         time.sleep(cfg.VLM_SLEEP_BETWEEN)
 
     total_findings = sum(len(a.get("findings", [])) for a in annotations)
-    log.info(
-        f"VLM annotation complete: {len(annotations)} images, "
-        f"{total_findings} total findings"
-    )
+    msg_end = f"VLM annotation complete: {len(annotations)} images, {total_findings} total findings"
+    log.info(msg_end)
+    LogStream.emit(msg_end, level="info", source="vlm_annotation")
 
     # Save to data/vlm_cache.json automatically
     cache_path = cfg.DATA_DIR / "vlm_cache.json"
