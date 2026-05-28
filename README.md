@@ -145,8 +145,8 @@ Protosem2/
 ### 1. Clone and enter the repo
 
 ```bash
-git clone <your-repo-url>
-cd Protosem2
+git clone https://github.com/Ghnkrk/dyn-eye
+cd dyn-eye
 ```
 
 ### 2. Create virtual environment and install dependencies
