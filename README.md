@@ -58,7 +58,7 @@ Input Images ──► YOLO Inference ──► Known? ──► SKIP (already t
 ## Repository Structure
 
 ```
-Protosem2/
+dyn-eye/
 ├── config.py                   # Central config — all paths, thresholds, API keys
 ├── main.py                     # CLI entry point  (dashboard / pipeline / reset)
 ├── pyproject.toml              # uv-managed dependencies
