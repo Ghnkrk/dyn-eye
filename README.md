@@ -410,50 +410,6 @@ Every fine-tuning run:
 
 ---
 
-## .gitignore Notes
-
-The `.gitignore` is correctly structured. Key observations:
-
-| Pattern | Reason |
-|---|---|
-| `data/` + `!data/.gitkeep` | Runtime data excluded; placeholder keeps folder in git |
-| `models/*.pt` | Model weights (large binary) excluded |
-| `models/versions/` | Fine-tuned checkpoints excluded |
-| `logs/`, `runs/` | Training artifacts excluded |
-| `.env` | API keys never committed |
-| `.venv/` | Virtual environment excluded |
-| `*.dvc`, `dvc.lock` | DVC metadata excluded (use DVC remote for data) |
-| `mlruns/` | MLflow local store excluded |
-
-### ⚠️ Issues to fix before pushing
-
-1. **`models/best_initial.pt` is NOT ignored** — at 51 MB this will bloat the repo. Add to `.gitignore`:
-   ```
-   models/*.pt
-   ```
-   This already covers it — but ensure `best_initial.pt` hasn't been tracked yet:
-   ```bash
-   git rm --cached models/best_initial.pt models/best.pt 2>/dev/null
-   ```
-
-2. **`data/label_studio_sync_pending.json`** and **`data/manifest_save_pending.json`** are data-dir files that get generated at runtime — already covered by `data/` ignore.
-
-3. **`uv.lock`** (1.4 MB) — currently **not ignored** and should be committed (it's the lockfile equivalent of `poetry.lock`). This is correct — keep it.
-
-4. **`yolo26n.pt`** in project root — this 5.5 MB file is **NOT ignored**. Add it:
-   ```
-   # Add to .gitignore
-   *.pt
-   ```
-   Or move it into `models/` where it's already covered.
-
-5. **`__pycache__/`** in root — already in `.gitignore`, but run:
-   ```bash
-   git rm -r --cached __pycache__/ 2>/dev/null
-   ```
-
----
-
 ## Troubleshooting
 
 ### Dashboard doesn't start
