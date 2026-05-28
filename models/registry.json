@@ -5,8 +5,8 @@
       "version_num": 1,
       "path": "E:\\Protosem2\\models\\versions\\best_v1_initial.pt",
       "original_path": "E:\\Protosem2\\models\\best_initial.pt",
-      "timestamp": "20260526_062026",
-      "created_at": "2026-05-26T06:20:26.487925+00:00",
+      "timestamp": "20260526_092333",
+      "created_at": "2026-05-26T09:23:33.070275+00:00",
       "metrics": {
         "mAP50": 0.95,
         "precision": 0.92,
@@ -25,78 +25,9 @@
       ],
       "dataset_stats": {},
       "size_mb": 48.8,
-      "status": "retired"
-    },
-    {
-      "version_id": "v2_20260526_064422",
-      "version_num": 2,
-      "path": "E:\\Protosem2\\models\\versions\\best_v2_20260526_064422.pt",
-      "original_path": "E:\\Protosem2\\models\\versions\\best_v20260526_121333.pt",
-      "timestamp": "20260526_064422",
-      "created_at": "2026-05-26T06:44:22.917456+00:00",
-      "metrics": {
-        "map50": 0.0006403540614148151,
-        "map50_95": 0.00013199292988109627,
-        "precision": 0.0023035342160783855,
-        "recall": 0.10784313725490197
-      },
-      "training_config": {
-        "epochs": 1,
-        "imgsz": 640,
-        "batch": 8,
-        "lr0": 0.01,
-        "lrf": 0.1,
-        "momentum": 0.937,
-        "weight_decay": 0.0005,
-        "warmup_epochs": 0.0,
-        "patience": 5,
-        "optimizer": "Adam",
-        "cos_lr": true,
-        "freeze": 10,
-        "augment": true,
-        "mosaic": 0.5,
-        "mixup": 0.2,
-        "degrees": 10.0,
-        "translate": 0.2,
-        "scale": 0.5,
-        "flipud": 0.5,
-        "fliplr": 0.5,
-        "hsv_h": 0.2,
-        "hsv_s": 0.2,
-        "hsv_v": 0.2
-      },
-      "source": "llm-advised-finetuning",
-      "notes": "Enough data for transfer learning with heavy augmentation",
-      "classes": [
-        "waistfolding",
-        "rolled_pit",
-        "inclusion",
-        "oil_spot",
-        "punching_hole",
-        "silk_spot",
-        "water_spot",
-        "welding_line"
-      ],
-      "dataset_stats": {
-        "total_crops": 85,
-        "num_classes": 2,
-        "classes": {
-          "waistfolding": 34,
-          "rolled_pit": 51
-        }
-      },
-      "size_mb": 48.8,
       "status": "deployed"
     }
   ],
-  "current": "v2_20260526_064422",
-  "deployment_history": [
-    {
-      "version_id": "v2_20260526_064422",
-      "previous_version": "v1_initial",
-      "deployed_at": "2026-05-26T06:44:23.687348+00:00",
-      "confirmed_by": "auto-deploy",
-      "action": "deploy"
-    }
-  ]
+  "current": "v1_initial",
+  "deployment_history": []
 }

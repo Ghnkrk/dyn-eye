@@ -5,8 +5,82 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="DYN-EYE — Autonomous Anomaly Discovery and Self-Learning Detection Pipeline">
     <title>DYN-EYE — Defect Discovery</title>
-    <link rel="stylesheet" href="/static/style.css?v=3.0.1">
+    <link rel="stylesheet" href="/static/style.css?v=4.2.0">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔬</text></svg>">
+    <style>
+        /* Force upload zone box — visible dashed border */
+        .drag-drop-zone {
+            border: 2px dashed #52525b !important;
+            border-radius: 12px !important;
+            padding: 28px 20px !important;
+            display: flex !important;
+            flex-direction: column !important;
+            align-items: center !important;
+            justify-content: center !important;
+            gap: 10px !important;
+            cursor: pointer !important;
+            transition: all 0.25s ease !important;
+            margin-bottom: 12px !important;
+            background: #0c0c0e !important;
+            position: relative !important;
+            overflow: hidden !important;
+        }
+        .drag-drop-zone:hover, .drag-drop-zone.dragover {
+            border-color: #10b981 !important;
+            background: rgba(16,185,129,0.04) !important;
+            box-shadow: 0 0 0 3px rgba(16,185,129,0.08), 0 8px 24px rgba(16,185,129,0.12) !important;
+        }
+        .dz-icon-ring {
+            width: 52px; height: 52px; border-radius: 50%;
+            background: #18181b; border: 1px solid #3f3f46;
+            display: flex; align-items: center; justify-content: center;
+            color: #71717a; transition: all 0.25s ease;
+        }
+        .drag-drop-zone:hover .dz-icon-ring, .drag-drop-zone.dragover .dz-icon-ring {
+            border-color: #10b981 !important; color: #10b981 !important;
+            background: rgba(16,185,129,0.1) !important;
+        }
+        .dz-label   { font-weight: 600; font-size: 0.88rem; color: #e4e4e7; margin-top: 2px; }
+        .dz-formats { font-size: 0.68rem; color: #71717a; font-family: monospace; letter-spacing: 0.1em; text-transform: uppercase; }
+        .dz-browse-btn { margin-top: 4px; padding: 4px 14px; border: 1px solid #3f3f46; border-radius: 999px; font-size: 0.72rem; color: #a1a1aa; transition: all 0.2s; }
+        .drag-drop-zone:hover .dz-browse-btn { border-color: #10b981 !important; color: #10b981 !important; }
+        /* Terminal modal — pure black */
+        .modal--terminal .modal-content {
+            background: #000 !important;
+            border: 1px solid #27272a !important;
+            max-width: 90%; width: 1000px;
+            height: 78vh;
+            display: flex; flex-direction: column; padding: 0;
+        }
+        .modal--terminal .modal-header {
+            background: #0a0a0a !important;
+            border-bottom: 1px solid #27272a !important;
+            padding: 14px 20px;
+            display: flex; align-items: center; justify-content: space-between;
+        }
+        .modal--terminal .modal-header .modal-title { color: #a3e635 !important; font-family: monospace; }
+        .modal--terminal .modal-body {
+            flex: 1 !important;
+            background: #000000 !important;
+            color: #a3e635 !important;
+            font-family: 'Fira Code', Consolas, monospace !important;
+            font-size: 0.8rem !important;
+            line-height: 1.65 !important;
+            padding: 18px 22px !important;
+            overflow-y: auto !important;
+        }
+        .modal--terminal .modal-body .log-ts  { color: #3f3f46 !important; min-width: 64px; display: inline-block; }
+        .modal--terminal .modal-body .log-src  { color: #52525b !important; min-width: 90px; display: inline-block; }
+        .modal--terminal .modal-body .log-msg  { color: #a3e635 !important; }
+        .modal--terminal .modal-body .log-line--error .log-msg { color: #f87171 !important; }
+        .modal--terminal .modal-body .log-line--warn  .log-msg { color: #fbbf24 !important; }
+        .modal--terminal .modal-body .log-line--step  .log-msg { color: #38bdf8 !important; }
+        /* Right log panel — compact height */
+        .log-viewer { max-height: 520px !important; }
+        #log-body   { max-height: 200px !important; overflow-y: auto !important; }
+        #train-log-body-wrap { max-height: 160px !important; overflow-y: auto !important; }
+        @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+    </style>
 </head>
 <body>
 <div class="app" id="app">
@@ -91,24 +165,32 @@
                     </div>
                 </div>
 
-                <div class="input-row mb-md" id="upload-row" style="transition: opacity var(--ease); border-top: 1px solid var(--border); padding-top: 12px; margin-top: 12px;">
-                    <div class="input-group" style="width: 100%;">
-                        <label>Custom Image Dataset Upload</label>
-                        <div style="display: flex; gap: 10px; align-items: center; margin-top: 6px;">
-                            <label class="btn btn--outline btn--sm" style="cursor: pointer; display: flex; align-items: center; gap: 6px; font-size: 0.75rem; padding: 6px 12px; margin: 0; background: var(--bg-elevated);">
-                                📁 Select Image Folder
-                                <input type="file" id="upload-input" webkitdirectory directory multiple accept="image/*" style="display: none;" onchange="handleImageUpload(event)">
-                            </label>
-                            <span id="upload-status" class="text-xs" style="color: var(--text-muted); font-style: italic;">Using default input dataset (80 images)</span>
+                <!-- Professional Drag & Drop field -->
+                <div id="upload-row" style="transition: opacity var(--ease); border-top: 1px solid var(--border-light); padding-top: 16px; margin-top: 12px;">
+                    <div class="drag-drop-zone" id="drop-zone" onclick="document.getElementById('upload-input').click()" ondragover="event.preventDefault(); this.classList.add('dragover');" ondragleave="this.classList.remove('dragover');" ondrop="handleDropEvent(event)">
+                        <div class="dz-icon-ring">
+                            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                <polyline points="17 8 12 3 7 8"/>
+                                <line x1="12" y1="3" x2="12" y2="15"/>
+                            </svg>
                         </div>
+                        <div class="dz-label">Drop Images or Folder here</div>
+                        <div class="dz-formats">PNG &nbsp;·&nbsp; JPG &nbsp;·&nbsp; BMP &nbsp;·&nbsp; TIFF</div>
+                        <div class="dz-browse-btn">Browse Files ↗</div>
+                        <input type="file" id="upload-input" webkitdirectory directory multiple accept="image/*" style="display: none;" onchange="handleImageUpload(event)">
+                    </div>
+                    <div style="display:flex; align-items:center; gap:8px; padding:6px 4px;">
+                        <span style="font-size:0.75rem; color:var(--text-muted);">📁</span>
+                        <span id="upload-status" class="text-xs" style="color: var(--text-secondary); font-weight: 500;">Using default input dataset (80 images)</span>
                     </div>
                 </div>
 
-                <div class="flex gap-sm" style="border-top: 1px solid var(--border); padding-top: 12px; margin-top: 12px; align-items: center;">
-                    <button class="btn btn--primary" id="btn-discover" onclick="triggerDiscovery()">
+                <div style="display: flex; gap: 12px; border-top: 1px solid var(--border-light); padding-top: 16px; align-items: center; justify-content: center; width: 100%;">
+                    <button class="btn btn--primary" id="btn-discover" onclick="triggerDiscovery()" style="flex: 1; justify-content: center;">
                         ▶ Run Pipeline
                     </button>
-                    <button class="btn btn--outline" id="btn-camera" onclick="triggerCameraFeedDemo()" style="display: flex; align-items: center; gap: 6px; border-color: var(--warning); color: var(--warning); padding: 8px 16px;">
+                    <button class="btn btn--outline" id="btn-camera" onclick="triggerCameraFeedDemo()" style="display: flex; align-items: center; justify-content: center; gap: 6px; border-color: var(--warning); color: var(--warning); padding: 8px 16px; flex: 1;">
                         🎥 Camera Feed
                     </button>
                 </div>
@@ -116,9 +198,12 @@
 
             <!-- Pipeline Flow -->
             <div class="card">
-                <div class="card-header">
+                <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
                     <div class="card-title">Discovery Pipeline</div>
+                    <button class="btn btn--outline btn--sm" id="btn-toggle-pipeline" onclick="togglePipelineView()" style="font-size: 0.75rem; padding: 4px 8px;">Collapse ▬</button>
                 </div>
+                
+                <!-- Expanded vertical nodes list -->
                 <div class="pipeline-flow" id="pipe-flow">
                     <div class="pipe-node" id="pn-yolo_inference">
                         <div class="pipe-idx">1</div>
@@ -180,14 +265,47 @@
                     </div>
                     <div class="pipe-connector"></div>
 
-                    <div class="pipe-node" id="pn-label_studio_sync">
+                    <div class="pipe-node" id="pn-save_manifest">
                         <div class="pipe-idx">7</div>
                         <div>
                             <div class="pipe-name">Save Manifest</div>
-                            <div class="pipe-detail" id="pd-label_studio_sync">Persist cluster mapping</div>
+                            <div class="pipe-detail" id="pd-save_manifest">Persist cluster mapping</div>
                         </div>
-                        <div class="pipe-right"><span class="pipe-latency" id="pl-label_studio_sync">—</span></div>
+                        <div class="pipe-right"><span class="pipe-latency" id="pl-save_manifest">—</span></div>
                     </div>
+                    <div class="pipe-connector"></div>
+
+                    <div class="pipe-node" id="pn-llm_advisor">
+                        <div class="pipe-idx">8</div>
+                        <div>
+                            <div class="pipe-name">LLM Advisor</div>
+                            <div class="pipe-detail" id="pd-llm_advisor">Hyperparameter generation</div>
+                        </div>
+                        <div class="pipe-right"><span class="pipe-latency" id="pl-llm_advisor">—</span></div>
+                    </div>
+                    <div class="pipe-connector"></div>
+
+                    <div class="pipe-node" id="pn-train_yolo">
+                        <div class="pipe-idx">9</div>
+                        <div>
+                            <div class="pipe-name">YOLO Fine-tuning</div>
+                            <div class="pipe-detail" id="pd-train_yolo">Transfer learning & deployment</div>
+                        </div>
+                        <div class="pipe-right"><span class="pipe-latency" id="pl-train_yolo">—</span></div>
+                    </div>
+                </div>
+
+                <!-- Minimized Single Horizontal Tray -->
+                <div class="pipeline-tray" id="pipeline-tray">
+                    <div style="font-weight:600; font-size:0.85rem; display:flex; align-items:center; gap:8px; white-space:nowrap;">
+                        <span class="status-dot" id="tray-live-dot" style="background:var(--accent); width:8px; height:8px; border-radius:50%; display:inline-block;"></span>
+                        <span>Stage:</span>
+                        <span id="pipeline-tray-current" style="color:var(--accent); font-weight:700;">Idle</span>
+                    </div>
+                    <div class="progress-bar-container">
+                        <div id="pipeline-tray-progress" style="width:0%; height:100%; background:var(--success); transition:width var(--ease);"></div>
+                    </div>
+                    <div id="pipeline-tray-percentage" style="font-size:0.75rem; font-family:var(--font-mono); font-weight:600; min-width:32px;">0%</div>
                 </div>
             </div>
 
@@ -202,19 +320,29 @@
                 </div>
             </div>
 
-            <!-- Model Management Section -->
+            <!-- Model Management Section (Expandable) -->
             <div class="section">
-                <div class="section-title" style="display:flex; align-items:center; gap:12px;">
-                    Model Registry
-                    <span class="status-pill status-pill--idle" id="model-active-pill" style="font-size:12px;">
-                        <span class="status-dot"></span>
-                        <span id="model-active-text">No active model</span>
-                    </span>
+                <div class="section-title" style="display:flex; align-items:center; justify-content:space-between; width:100%; gap:12px;">
+                    <div style="display:flex; align-items:center; gap:12px;">
+                        Model Registry
+                        <span class="status-pill status-pill--idle" id="model-active-pill" style="font-size:12px;">
+                            <span class="status-dot"></span>
+                            <span id="model-active-text">No active model</span>
+                        </span>
+                    </div>
+                    <button class="btn btn--outline btn--sm" id="btn-expand-registry" onclick="openRegistryModal()" style="font-size:0.75rem; padding:4px 8px;">Expand ✚</button>
                 </div>
-                <div id="model-versions-grid" class="model-versions-grid">
-                    <div class="empty" style="grid-column:1/-1">
-                        <div class="empty-icon">📦</div>
-                        <div>No model versions registered yet</div>
+                
+                <!-- Compact current model view (visible by default) -->
+                <div class="card mt-sm" id="compact-registry-view" style="padding:16px; background:var(--bg-surface); border:1px solid var(--border-light); border-radius:var(--radius-md); display:flex; justify-content:space-between; align-items:center;">
+                    <div>
+                        <span style="font-weight:600; font-size:0.9rem;" id="lbl-compact-model-version">Standby</span>
+                        <div class="text-xs text-muted" id="lbl-compact-model-date" style="margin-top:2px;">No active model loaded</div>
+                    </div>
+                    <!-- Tooltip icon for classes -->
+                    <div class="tooltip-container" id="compact-model-classes-trigger" style="display:none;">
+                        <span class="classes-icon" style="cursor:help; font-size:1.2rem; filter:grayscale(0.3);">🏷️</span>
+                        <span class="tooltip-text" id="compact-model-classes-tooltip">No classes</span>
                     </div>
                 </div>
             </div>
@@ -222,7 +350,7 @@
 
         <!-- RIGHT PANEL: MLOps Control & Terminals -->
         <div class="log-viewer" id="log-viewer">
-            <div class="log-header" style="padding: 0; display: flex; flex-direction: column; border-bottom: 1px solid var(--border);">
+            <div class="log-header" style="padding: 0; display: flex; flex-direction: column; border-bottom: 1px solid var(--border-light);">
                 <!-- Tabs Header -->
                 <div class="tabs-header" style="display: flex; width: 100%;">
                     <button class="tab-btn active" id="tab-btn-logs" onclick="switchRightTab('logs')" style="flex: 1; padding: 12px; background: none; border: none; border-bottom: 2px solid var(--accent); color: var(--text-primary); font-weight: bold; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 14px;">
@@ -237,12 +365,15 @@
 
             <!-- TAB CONTENT 1: Pipeline Logs -->
             <div class="tab-content active" id="tab-content-logs" style="height: calc(100% - 46px); display: flex; flex-direction: column;">
-                <div class="log-header" style="border-bottom: none; padding: 10px 16px; min-height: 40px;">
+                <div class="log-header" style="border-bottom: none; padding: 10px 16px; min-height: 40px; justify-content: space-between; align-items: center; display: flex; width: 100%;">
                     <div class="log-title">
                         <div class="log-live-dot" id="log-dot"></div>
                         Live Pipeline Events
                     </div>
-                    <button class="btn btn--outline btn--sm" onclick="clearLogs()">Clear</button>
+                    <div style="display: flex; gap: 8px;">
+                        <button class="btn btn--outline btn--sm" onclick="openTerminalModal('logs')" style="font-size: 11px; padding: 4px 8px;">Expand ↗</button>
+                        <button class="btn btn--outline btn--sm" onclick="clearLogs()" style="font-size: 11px; padding: 4px 8px;">Clear</button>
+                    </div>
                 </div>
                 <div class="log-body" id="log-body" style="flex: 1; overflow-y: auto;">
                     <div class="log-line">
@@ -255,18 +386,21 @@
 
             <!-- TAB CONTENT 2: YOLO Retraining Terminal -->
             <div class="tab-content" id="tab-content-train" style="height: calc(100% - 46px); display: none; flex-direction: column;">
-                <div class="log-header" style="border-bottom: none; padding: 10px 16px; min-height: 40px;">
+                <div class="log-header" style="border-bottom: none; padding: 10px 16px; min-height: 40px; justify-content: space-between; align-items: center; display: flex; width: 100%;">
                     <div class="log-title">
                         <div class="log-live-dot" id="train-dot" style="background: var(--text-secondary);"></div>
                         Fine-tuning Monitor
                     </div>
-                    <button class="btn btn--outline btn--sm" onclick="clearTrainLogs()">Clear</button>
+                    <div style="display: flex; gap: 8px;">
+                        <button class="btn btn--outline btn--sm" onclick="openTerminalModal('train')" style="font-size: 11px; padding: 4px 8px;">Expand ↗</button>
+                        <button class="btn btn--outline btn--sm" onclick="clearTrainLogs()" style="font-size: 11px; padding: 4px 8px;">Clear</button>
+                    </div>
                 </div>
-                <div class="train-container" style="flex: 1; display: flex; flex-direction: column; padding: 12px; gap: 12px; overflow-y: auto; background: var(--bg-card);">
+                <div class="train-container" style="flex: 1; display: flex; flex-direction: column; padding: 12px; gap: 12px; overflow-y: auto; background: var(--bg-surface);">
                     
                     <!-- Advisor Panel -->
-                    <div class="advisor-card" id="train-advisor-card" style="background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 8px; padding: 12px; display: none;">
-                        <h4 style="margin: 0 0 6px 0; color: var(--accent); display: flex; align-items: center; gap: 6px;">💡 LLM Advisor Recommendation</h4>
+                    <div class="advisor-card" id="train-advisor-card" style="background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 8px; padding: 12px; display: none;">
+                        <h4 style="margin: 0 0 6px 0; color: var(--success); display: flex; align-items: center; gap: 6px;">💡 LLM Advisor Recommendation</h4>
                         <div id="train-advisor-content" style="font-size: 13px; color: var(--text-primary); line-height: 1.4; margin-bottom: 10px;">Analyzing...</div>
                         <div class="flex gap-sm">
                             <button class="btn btn--success btn--sm" id="btn-advisor-accept" onclick="acceptAdvisorRecommendation()">🚀 Start Training</button>
@@ -274,22 +408,34 @@
                         </div>
                     </div>
 
+                    <!-- Mechanical Running Wheel Widget -->
+                    <div class="training-spinner-wrapper" id="training-spinner-widget">
+                        <div class="running-wheel-container">
+                            <svg class="running-wheel" viewBox="0 0 100 100" width="60" height="60">
+                                <circle cx="50" cy="50" r="35" stroke="var(--success)" stroke-width="6" fill="none" stroke-linecap="round" stroke-dasharray="140 60"></circle>
+                                <path d="M 50,15 L 50,25 M 50,75 L 50,85 M 15,50 L 25,50 M 75,50 L 85,50 M 25,25 L 32,32 M 68,68 L 75,75 M 25,75 L 32,68 M 68,25 L 75,32" stroke="var(--success)" stroke-width="6" stroke-linecap="round"></path>
+                                <circle cx="50" cy="50" r="10" fill="var(--success)"></circle>
+                            </svg>
+                        </div>
+                        <div class="training-spinner-text">YOLO FINE-TUNING ACTIVE</div>
+                    </div>
+
                     <!-- Live Metrics Widgets -->
                     <div id="train-widgets" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
-                        <div class="card" style="padding: 10px; background: rgba(0,0,0,0.03); border: 1px solid var(--border);">
-                            <div style="font-size: 11px; color: var(--text-secondary); text-transform: uppercase;">Current Epoch</div>
+                        <div class="card" style="padding: 10px; background: var(--bg-inset); border: 1px solid var(--border-light);">
+                            <div style="font-size: 11px; color: var(--text-secondary); text-transform: uppercase; font-weight: 500;">Current Epoch</div>
                             <div id="val-train-epoch" style="font-size: 20px; font-weight: bold; margin-top: 4px;">—</div>
                         </div>
-                        <div class="card" style="padding: 10px; background: rgba(0,0,0,0.03); border: 1px solid var(--border);">
-                            <div style="font-size: 11px; color: var(--text-secondary); text-transform: uppercase;">Training Loss</div>
+                        <div class="card" style="padding: 10px; background: var(--bg-inset); border: 1px solid var(--border-light);">
+                            <div style="font-size: 11px; color: var(--text-secondary); text-transform: uppercase; font-weight: 500;">Training Loss</div>
                             <div id="val-train-loss" style="font-size: 20px; font-weight: bold; margin-top: 4px; color: var(--error);">—</div>
                         </div>
                     </div>
 
                     <!-- Retraining Log Screen -->
-                    <div class="train-log-screen" style="flex: 1; min-height: 180px; background: #0f172a; border-radius: 8px; border: 1px solid #1e293b; padding: 12px; font-family: Consolas, Monaco, monospace; font-size: 12px; color: #38bdf8; overflow-y: auto; display: flex; flex-direction: column; gap: 4px;">
+                    <div class="train-log-screen" style="flex: 1; min-height: 180px; background: #050507; border-radius: 8px; border: 1px solid var(--border-light); padding: 12px; font-family: Consolas, Monaco, monospace; font-size: 12px; color: var(--text-secondary); overflow-y: auto; display: flex; flex-direction: column; gap: 4px;">
                         <div id="train-log-body">
-                            <span style="color: #64748b;">[Retraining Terminal Idle]</span>
+                            <span style="color: var(--text-muted);">[Retraining Terminal Idle]</span>
                         </div>
                     </div>
                 </div>
@@ -299,6 +445,60 @@
     </div><!-- /main-grid -->
 
 </div><!-- /app -->
+
+<!-- Expandable Terminal Overlay: Logs -->
+<div class="modal modal--terminal" id="terminal-logs-modal">
+    <div class="modal-content modal-content--terminal" style="background:#000!important;border:1px solid #27272a;max-width:90%;width:1000px;height:78vh;display:flex;flex-direction:column;padding:0;overflow:hidden;">
+        <div class="modal-header" style="background:#0a0a0a!important;border-bottom:1px solid #27272a;padding:14px 20px;display:flex;align-items:center;justify-content:space-between;">
+            <h3 class="modal-title" style="color:#a3e635;font-family:monospace;font-size:0.9rem;margin:0;display:flex;align-items:center;gap:8px;">
+                <span style="display:inline-flex;gap:5px;"><span style="width:10px;height:10px;border-radius:50%;background:#ef4444;"></span><span style="width:10px;height:10px;border-radius:50%;background:#f59e0b;"></span><span style="width:10px;height:10px;border-radius:50%;background:#10b981;"></span></span>
+                DYN-EYE — Pipeline Live Terminal
+            </h3>
+            <div style="display:flex;gap:8px;">
+                <button class="btn btn--outline btn--sm" onclick="clearLogs()" style="border-color:#3f3f46;color:#a1a1aa;">Clear</button>
+                <button class="modal-close" onclick="closeTerminalModal('logs')" style="color:#a1a1aa;">&times;</button>
+            </div>
+        </div>
+        <div class="modal-body" id="terminal-logs-body" style="flex:1;background:#000000!important;color:#a3e635;font-family:'Fira Code',Consolas,monospace;font-size:0.8rem;line-height:1.65;padding:16px 20px;overflow-y:auto;">
+            <span style="color:#3f3f46;">dyneye@pipeline:~$ <span style="animation:blink 1s step-end infinite;">█</span></span>
+        </div>
+    </div>
+</div>
+
+<!-- Expandable Terminal Overlay: Train -->
+<div class="modal modal--terminal" id="terminal-train-modal">
+    <div class="modal-content modal-content--terminal" style="background:#000!important;border:1px solid #27272a;max-width:90%;width:1000px;height:78vh;display:flex;flex-direction:column;padding:0;overflow:hidden;">
+        <div class="modal-header" style="background:#0a0a0a!important;border-bottom:1px solid #27272a;padding:14px 20px;display:flex;align-items:center;justify-content:space-between;">
+            <h3 class="modal-title" style="color:#a3e635;font-family:monospace;font-size:0.9rem;margin:0;display:flex;align-items:center;gap:8px;">
+                <span style="display:inline-flex;gap:5px;"><span style="width:10px;height:10px;border-radius:50%;background:#ef4444;"></span><span style="width:10px;height:10px;border-radius:50%;background:#f59e0b;"></span><span style="width:10px;height:10px;border-radius:50%;background:#10b981;"></span></span>
+                DYN-EYE &mdash; YOLO Fine-Tuning Console
+            </h3>
+            <div style="display:flex;gap:8px;">
+                <button class="btn btn--outline btn--sm" onclick="clearTrainLogs()" style="border-color:#3f3f46;color:#a1a1aa;">Clear</button>
+                <button class="modal-close" onclick="closeTerminalModal('train')" style="color:#a1a1aa;">&times;</button>
+            </div>
+        </div>
+        <div class="modal-body" id="terminal-train-body" style="flex:1;background:#000000!important;color:#a3e635;font-family:'Fira Code',Consolas,monospace;font-size:0.8rem;line-height:1.65;padding:16px 20px;overflow-y:auto;">
+            <span style="color:#3f3f46;">dyneye@trainer:~$ <span style="animation:blink 1s step-end infinite;">█</span></span>
+        </div>
+    </div>
+</div>
+
+
+<!-- Expanded Model Registry Modal -->
+<div class="modal" id="registry-modal">
+    <div class="modal-content" style="max-width:850px; background:var(--bg-surface); border:1px solid var(--border-light);">
+        <div class="modal-header" style="border-bottom:1px solid var(--border-light);">
+            <h3 class="modal-title">📦 Model Version Registry</h3>
+            <button class="modal-close" onclick="closeRegistryModal()">&times;</button>
+        </div>
+        <div class="modal-body" style="padding:20px; overflow-y:auto; max-height:70vh;">
+            <div id="model-versions-grid" class="model-versions-grid">
+                <!-- Dynamically loaded grid of cards inside modal -->
+            </div>
+        </div>
+    </div>
+</div>
 
 <!-- Cluster Editor Modal -->
 <div class="modal" id="cluster-modal">
@@ -330,8 +530,9 @@
     </div>
 </div>
 
+<div id="floating-tooltip"></div>
 <div class="toast-wrap" id="toast-wrap"></div>
 
-<script src="/static/app.js?v=3.0.1"></script>
+<script src="/static/app.js?v=4.1.0"></script>
 </body>
 </html>

@@ -111,14 +111,15 @@ function appendLog(evt) {
 
     // Intercept progress events (e.g. VLM annotation sequential image progress) for discovery nodes
     if (evt.level === 'progress' && NODE_NAMES.includes(evt.source)) {
-        const detail = document.getElementById(`pd-${evt.source}`);
+        const nodeId = SOURCE_TO_NODE_ID[evt.source] || evt.source;
+        const detail = document.getElementById(`pd-${nodeId}`);
         if (detail) {
             detail.textContent = evt.message;
         }
         return;
     }
 
-    const isTrainLog = evt.source === 'yolo_train' || evt.source === 'model_registry' || evt.source === 'system' || evt.source === 'llm_advisor';
+    const isTrainLog = evt.source === 'yolo_train' || evt.source === 'train_yolo' || evt.source === 'model_registry' || evt.source === 'system' || evt.source === 'llm_advisor';
     const body = document.getElementById(isTrainLog ? 'train-log-body' : 'log-body');
     if (!body) return;
 
@@ -139,11 +140,36 @@ function appendLog(evt) {
     `;
     body.appendChild(line);
 
-    // Auto-scroll
-    body.scrollTop = body.scrollHeight;
+    // Also mirror to the expanded terminal modal if it exists
+    const modalBodyId = isTrainLog ? 'terminal-train-body' : 'terminal-logs-body';
+    const modalBody = document.getElementById(modalBodyId);
+    if (modalBody) {
+        // Clear placeholder text first time
+        if (isTrainLog && modalBody.textContent.includes('[Retraining Terminal Idle]')) {
+            modalBody.innerHTML = '';
+        }
+        const lineClone = line.cloneNode(true);
+        modalBody.appendChild(lineClone);
+        modalBody.scrollTop = modalBody.scrollHeight;
+        while (modalBody.children.length > 1000) modalBody.removeChild(modalBody.firstChild);
+    }
+
+    // Auto-scroll compact panel
+    if (logAutoScroll) body.scrollTop = body.scrollHeight;
 
     // Parse training progress metrics if available
     if (isTrainLog) {
+        // Toggle running wheel spinner based on active training logs
+        const spinner = document.getElementById('training-spinner-widget');
+        if (spinner) {
+            if (evt.message.includes('Starting') || evt.message.includes('retraining pipeline started') || evt.message.includes('Epoch')) {
+                spinner.style.display = 'flex';
+            }
+            if (evt.message.includes('finished') || evt.message.includes('complete') || evt.message.includes('deployed') || evt.message.includes('failed') || evt.message.includes('SYSTEM UNIVERSAL RESET')) {
+                spinner.style.display = 'none';
+            }
+        }
+
         // Look for epoch messages: "Epoch 3/30" or similar
         const epochMatch = evt.message.match(/epoch\s+(\d+)\/(\d+)/i) || evt.message.match(/Epoch\s+(\d+)/);
         if (epochMatch) {
@@ -191,19 +217,145 @@ document.addEventListener('DOMContentLoaded', () => {
 function clearLogs() {
     const body = document.getElementById('log-body');
     if (body) body.innerHTML = '';
+    const modal = document.getElementById('terminal-logs-body');
+    if (modal) modal.innerHTML = '<div class="log-line">Terminal cleared.</div>';
 }
 
 function clearTrainLogs() {
     const body = document.getElementById('train-log-body');
-    if (body) body.innerHTML = '<span style="color: #64748b;">[YOLO Retraining Terminal Cleared]</span>';
+    if (body) body.innerHTML = '<span style="color: var(--text-muted);">[YOLO Retraining Terminal Cleared]</span>';
+    const modal = document.getElementById('terminal-train-body');
+    if (modal) modal.innerHTML = '<span style="color: var(--text-muted);">[YOLO Retraining Terminal Cleared]</span>';
+}
+
+// ── Terminal Modal Controls ──────────────────────────────────
+function openTerminalModal(type) {
+    const modalId = type === 'train' ? 'terminal-train-modal' : 'terminal-logs-modal';
+    const modal = document.getElementById(modalId);
+    if (modal) modal.classList.add('active');
+}
+
+function closeTerminalModal(type) {
+    const modalId = type === 'train' ? 'terminal-train-modal' : 'terminal-logs-modal';
+    const modal = document.getElementById(modalId);
+    if (modal) modal.classList.remove('active');
+}
+
+// ── Registry Modal Controls ──────────────────────────────────
+function openRegistryModal() {
+    const modal = document.getElementById('registry-modal');
+    if (modal) modal.classList.add('active');
+    // Reload model versions into the expanded registry grid
+    loadModelVersions();
+}
+
+function closeRegistryModal() {
+    const modal = document.getElementById('registry-modal');
+    if (modal) modal.classList.remove('active');
+}
+
+// Close modals on backdrop click
+document.addEventListener('DOMContentLoaded', () => {
+    ['terminal-logs-modal', 'terminal-train-modal', 'registry-modal'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('click', (e) => {
+            if (e.target === el) el.classList.remove('active');
+        });
+    });
+});
+
+// ── Pipeline Collapse/Expand Controls ───────────────────────
+let pipelineExpanded = true;
+const PIPELINE_STEPS = [
+    'yolo_inference', 'vlm_annotation', 'crop_extraction', 'feature_extraction',
+    'faiss_search', 'hdbscan_cluster', 'save_manifest', 'llm_advisor', 'train_yolo'
+];
+const PIPELINE_STEP_NAMES = [
+    'YOLO Inference', 'VLM Annotation', 'Crop Extraction', 'DINOv2 Features',
+    'FAISS Search', 'HDBSCAN Clustering', 'Save Manifest', 'LLM Advisor', 'YOLO Fine-tuning'
+];
+
+function togglePipelineView() {
+    pipelineExpanded = !pipelineExpanded;
+    const btn = document.getElementById('btn-toggle-pipeline');
+    const flow = document.getElementById('pipe-flow');
+    const tray = document.getElementById('pipeline-tray');
+
+    if (pipelineExpanded) {
+        btn.textContent = 'Collapse ▬';
+        flow.style.display = 'block';
+        tray.style.display = 'none';
+    } else {
+        btn.textContent = 'Expand ✚';
+        flow.style.display = 'none';
+        tray.style.display = 'flex';
+        updatePipelineTray();
+    }
+}
+
+function updatePipelineTray() {
+    let activeIdx = -1;
+    let doneCount = 0;
+    PIPELINE_STEPS.forEach((step, i) => {
+        const el = document.getElementById(`pn-${step}`);
+        if (el && el.classList.contains('pipe-node--active') && activeIdx === -1) activeIdx = i;
+        if (el && el.classList.contains('pipe-node--done')) doneCount++;
+    });
+
+    let stageName = 'Idle';
+    let percentage = 0;
+
+    if (activeIdx !== -1) {
+        stageName = PIPELINE_STEP_NAMES[activeIdx];
+        percentage = Math.round((activeIdx / PIPELINE_STEPS.length) * 100);
+    } else if (doneCount > 0) {
+        if (doneCount >= PIPELINE_STEPS.length) {
+            stageName = 'All Complete ✓';
+            percentage = 100;
+        } else {
+            stageName = `Done: ${PIPELINE_STEP_NAMES[doneCount - 1]}`;
+            percentage = Math.round((doneCount / PIPELINE_STEPS.length) * 100);
+        }
+    }
+
+    const trayLabel = document.getElementById('pipeline-tray-current');
+    const trayBar = document.getElementById('pipeline-tray-progress');
+    const trayPct = document.getElementById('pipeline-tray-percentage');
+    if (trayLabel) trayLabel.textContent = stageName;
+    if (trayBar) trayBar.style.width = `${percentage}%`;
+    if (trayPct) trayPct.textContent = `${percentage}%`;
+}
+
+// ── Drag and Drop Upload Support ─────────────────────────────
+function handleDropEvent(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    const zone = document.getElementById('drop-zone');
+    if (zone) zone.classList.remove('dragover');
+    const files = e.dataTransfer ? e.dataTransfer.files : null;
+    if (files && files.length > 0) {
+        // Simulate the file input change event
+        const mockEvent = { target: { files } };
+        handleImageUpload(mockEvent);
+    }
 }
 
 // ── Pipeline Status from Logs ───────────────────────────────
-const NODE_NAMES = [
-    'yolo_inference', 'vlm_annotation', 'crop_extraction',
-    'feature_extraction', 'faiss_search', 'hdbscan_cluster',
-    'label_studio_sync',
-];
+const SOURCE_TO_NODE_ID = {
+    'yolo_inference': 'yolo_inference',
+    'vlm_annotation': 'vlm_annotation',
+    'crop_extraction': 'crop_extraction',
+    'feature_extraction': 'feature_extraction',
+    'faiss_search': 'faiss_search',
+    'hdbscan_cluster': 'hdbscan_cluster',
+    'label_studio_sync': 'save_manifest',
+    'manifest_save': 'save_manifest',
+    'llm_advisor': 'llm_advisor',
+    'yolo_train': 'train_yolo',
+    'train_yolo': 'train_yolo'
+};
+
+const NODE_NAMES = Object.keys(SOURCE_TO_NODE_ID);
 
 let pipelineRunning = false;
 
@@ -217,7 +369,7 @@ function updatePipelineFromLog(evt) {
         pipelineRunning = true;
         hasDiscoveryRunThisSession = true;
         // Reset all nodes
-        NODE_NAMES.forEach(n => setNodeState(n, ''));
+        Object.values(SOURCE_TO_NODE_ID).forEach(nodeId => setNodeState(nodeId, ''));
         // Clear cluster display immediately to prevent showing stale data
         clearClusters();
     }
@@ -239,22 +391,23 @@ function updatePipelineFromLog(evt) {
 
     // Update individual nodes
     if (NODE_NAMES.includes(source)) {
-        if (evt.level === 'step' && evt.message.includes('Starting')) {
-            setNodeState(source, 'active');
+        const nodeId = SOURCE_TO_NODE_ID[source];
+        if (evt.level === 'step' && (evt.message.includes('Starting') || evt.message.includes('running') || evt.message.includes('Triggering'))) {
+            setNodeState(nodeId, 'active');
         }
-        if (evt.level === 'info' && evt.message.includes('complete')) {
-            setNodeState(source, 'done');
+        if (evt.level === 'info' && (evt.message.includes('complete') || evt.message.includes('saved') || evt.message.includes('finished') || evt.message.includes('deployed') || evt.message.includes('Ready for review'))) {
+            setNodeState(nodeId, 'done');
             // Show cached indicator
             if (evt.data && evt.data.cached) {
-                const detail = document.getElementById(`pd-${source}`);
+                const detail = document.getElementById(`pd-${nodeId}`);
                 if (detail) detail.textContent = `${evt.data.items_processed} items (cached)`;
             } else if (evt.data && evt.data.items_processed !== undefined) {
-                const detail = document.getElementById(`pd-${source}`);
+                const detail = document.getElementById(`pd-${nodeId}`);
                 if (detail) detail.textContent = `${evt.data.items_processed} items`;
             }
         }
         if (evt.level === 'error') {
-            setNodeState(source, 'fail');
+            setNodeState(nodeId, 'fail');
         }
     }
 }
@@ -264,6 +417,8 @@ function setNodeState(name, state) {
     if (!el) return;
     el.classList.remove('pipe-node--active', 'pipe-node--done', 'pipe-node--fail');
     if (state) el.classList.add(`pipe-node--${state}`);
+    // Also update the minimized tray if collapsed
+    if (!pipelineExpanded) updatePipelineTray();
 }
 
 function setGlobalStatus(status, text) {
@@ -467,16 +622,25 @@ function openClusterModal(clusterName) {
 
     let html = `
     <!-- Batch Action Bar -->
-    <div class="batch-bar" id="batch-bar" style="display:none; justify-content: space-between; align-items: center; padding: 12px; background: rgba(30, 41, 59, 0.9); backdrop-filter: blur(10px); border-radius: 8px; margin-bottom: 16px; border: 1px solid rgba(255,255,255,0.15);">
+    <div class="batch-bar" id="batch-bar" style="display:none; justify-content: space-between; align-items: center; padding: 12px; background: var(--bg-elevated); backdrop-filter: blur(10px); border-radius: 8px; margin-bottom: 16px; border: 1px solid var(--border-medium);">
       <div style="color:var(--text-primary); font-weight: 500; font-size:14px;"><span id="batch-count">0</span> crops selected</div>
       <div style="display:flex; gap:8px; align-items:center;">
         <span style="font-size:13px; color:var(--text-secondary);">Move to:</span>
-        <select id="batch-target-select" style="padding:6px 12px; border-radius:4px; background:var(--bg-secondary); color:var(--text-primary); border:1px solid rgba(255,255,255,0.15); cursor:pointer; font-size:13px;">
+        <select id="batch-target-select" style="padding:6px 12px; border-radius:4px; background:var(--bg-surface); color:var(--text-primary); border:1px solid var(--border-medium); cursor:pointer; font-size:13px;">
           ${batchOptions}
         </select>
         <button class="btn btn--primary btn--sm" onclick="runBatchMove('${clusterName}')" style="padding: 6px 12px; font-size: 13px;">Apply Move</button>
-        <button class="btn btn--danger btn--sm" onclick="runBatchDrop('${clusterName}')" style="padding: 6px 12px; font-size: 13px; background: var(--error);">🗑️ Drop Selected</button>
+        <button class="btn btn--danger btn--sm" onclick="runBatchDrop('${clusterName}')" style="padding: 6px 12px; font-size: 13px; background: var(--error);">🗑️ Drop</button>
       </div>
+    </div>
+
+    <!-- Select All Controls -->
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; padding:0 4px;">
+        <label style="display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600; cursor:pointer; color:var(--text-primary); user-select:none;">
+            <input type="checkbox" id="select-all-crops" onchange="toggleSelectAllCrops('${clusterName}', this.checked)" style="width:16px; height:16px; accent-color:var(--success); cursor:pointer;" />
+            Select All
+        </label>
+        <span style="font-size:12px; color:var(--text-muted); font-style:italic;">Check items to apply batch operations</span>
     </div>
     
     <div class="crop-grid">`;
@@ -645,12 +809,41 @@ async function triggerRetraining() {
 
 // ── Model Management ────────────────────────────────────────
 
+// Floating tooltip (JS-driven, reliable)
+function showFloatingTooltip(el) {
+    const tip = document.getElementById('floating-tooltip');
+    if (!tip) return;
+    const raw = el.dataset.tip || '';
+    tip.innerHTML = raw.replace(/\n/g, '<br>');
+    tip.style.display = 'block';
+    const rect = el.getBoundingClientRect();
+    tip.style.left = '-9999px';
+    tip.style.top  = '-9999px';
+    // Wait for size
+    requestAnimationFrame(() => {
+        const tipH = tip.offsetHeight;
+        const tipW = tip.offsetWidth;
+        let top  = rect.top - tipH - 10 + window.scrollY;
+        let left = rect.left + rect.width / 2 - tipW / 2;
+        if (top < 8) top = rect.bottom + 8 + window.scrollY;
+        if (left < 8) left = 8;
+        if (left + tipW > window.innerWidth - 8) left = window.innerWidth - tipW - 8;
+        tip.style.top  = top  + 'px';
+        tip.style.left = left + 'px';
+    });
+}
+function hideFloatingTooltip() {
+    const tip = document.getElementById('floating-tooltip');
+    if (tip) tip.style.display = 'none';
+}
+
+
 async function loadModelVersions() {
+
     try {
         const data = await get('/api/model-versions');
         const versions = data.versions || [];
         const current = data.current;
-        renderModelVersions(versions, current);
 
         // Update active model pill
         const pill = document.getElementById('model-active-pill');
@@ -663,8 +856,40 @@ async function loadModelVersions() {
             text.textContent = 'No active model';
         }
 
-        // Update stats card
+        // Compact registry view — show icon only, JS floating tooltip on hover
+        const activeVersion = versions.find(v => v.version_id === current);
+        const compactVersion = document.getElementById('lbl-compact-model-version');
+        const compactDate = document.getElementById('lbl-compact-model-date');
+        const trigger = document.getElementById('compact-model-classes-trigger');
+
+        if (activeVersion) {
+            if (compactVersion) compactVersion.textContent = activeVersion.version_id;
+            if (compactDate) compactDate.textContent = activeVersion.created_at
+                ? new Date(activeVersion.created_at).toLocaleString()
+                : (activeVersion.timestamp || 'Unknown date');
+            const classes = activeVersion.classes || [];
+            if (trigger) {
+                if (classes.length) {
+                    trigger.style.display = 'inline-flex';
+                    trigger.innerHTML = `<span
+                        data-tip="Classes (${classes.length})\n${classes.join('\n')}"
+                        onmouseenter="showFloatingTooltip(this)"
+                        onmouseleave="hideFloatingTooltip()"
+                        style="cursor:help;font-size:0.85rem;padding:3px 10px;border-radius:4px;background:rgba(255,255,255,0.06);border:1px solid #3f3f46;color:#a1a1aa;display:inline-flex;align-items:center;gap:5px;">
+                        🏷️ <span style="font-size:0.75rem;">${classes.length} classes</span>
+                    </span>`;
+                } else {
+                    trigger.style.display = 'none';
+                }
+            }
+        } else {
+            if (compactVersion) compactVersion.textContent = 'No active model';
+            if (compactDate) compactDate.textContent = 'Run the pipeline to register a model';
+            if (trigger) trigger.style.display = 'none';
+        }
+
         document.getElementById('s-models').textContent = versions.length || '0';
+        renderModelVersions(versions, current);
     } catch (e) {
         console.error('Model versions load failed:', e);
     }
@@ -672,6 +897,7 @@ async function loadModelVersions() {
 
 function renderModelVersions(versions, current) {
     const grid = document.getElementById('model-versions-grid');
+    if (!grid) return;
     if (!versions.length) {
         grid.innerHTML = `
             <div class="empty" style="grid-column:1/-1">
@@ -688,49 +914,45 @@ function renderModelVersions(versions, current) {
         const classes = v.classes || [];
         const created = v.created_at ? new Date(v.created_at).toLocaleString() : v.timestamp || '—';
 
-        // Metrics badges
-        let metricsHtml = '';
-        if (Object.keys(metrics).length) {
-            metricsHtml = '<div class="model-metrics">';
-            for (const [k, val] of Object.entries(metrics)) {
-                const display = typeof val === 'number' ? (val * 100).toFixed(1) + '%' : val;
-                metricsHtml += `<span class="model-metric">
-                    <span class="model-metric-label">${k}:</span>
-                    <span class="model-metric-value">${display}</span>
-                </span>`;
-            }
-            metricsHtml += '</div>';
-        }
+        // Floating tooltip texts via data-tip attribute (avoids HTML injection)
+        const classesTip = classes.length
+            ? `Classes (${classes.length})\n${classes.join('\n')}`
+            : '';
+        const metricsTip = Object.keys(metrics).length
+            ? 'Metrics\n' + Object.entries(metrics).map(([k, val]) => {
+                const d = typeof val === 'number' ? (val * 100).toFixed(1) + '%' : val;
+                return k + ': ' + d;
+              }).join('\n')
+            : '';
 
-        // Class tags
-        let classesHtml = '';
-        if (classes.length) {
-            classesHtml = '<div class="model-classes">';
-            classes.forEach(c => {
-                classesHtml += `<span class="model-class-tag">${escapeHtml(c)}</span>`;
-            });
-            classesHtml += '</div>';
-        }
+        const mkIcon = (emoji, tip, label) => tip
+            ? `<span data-tip="${escapeHtml(tip)}" onmouseenter="showFloatingTooltip(this)" onmouseleave="hideFloatingTooltip()" style="cursor:help;font-size:0.82rem;padding:3px 10px;border-radius:4px;background:rgba(255,255,255,0.05);border:1px solid #3f3f46;color:#a1a1aa;display:inline-flex;align-items:center;gap:4px;">${emoji} <span>${label}</span></span>`
+            : '';
 
         // Action buttons
         let actionsHtml = '<div class="model-card-actions">';
         if (!isActive) {
             actionsHtml += `<button class="btn btn--success btn--sm" onclick="deployModel('${v.version_id}')">🚀 Deploy</button>`;
             actionsHtml += `<button class="btn btn--outline btn--sm" onclick="rollbackModel('${v.version_id}')">↩️ Rollback</button>`;
+        } else {
+            actionsHtml += `<span class="status-pill status-pill--complete" style="font-size:11px;">✓ Active</span>`;
         }
         actionsHtml += `<button class="btn btn--outline btn--sm" onclick="showModelDetails('${v.version_id}')">📋 Details</button>`;
         actionsHtml += '</div>';
 
+        const iconBar = mkIcon('🏷️', classesTip, classes.length + ' classes') +
+                         mkIcon('📊', metricsTip, 'metrics');
+
+
         html += `
         <div class="model-card${isActive ? ' model-card--active' : ''}">
-            <div class="model-card-title">${v.version_id}</div>
+            <div class="model-card-title">${escapeHtml(v.version_id)}</div>
             <div class="model-card-meta">
                 <span>📅 ${created}</span>
                 <span>💾 ${v.size_mb || '?'} MB</span>
                 <span>🔧 ${v.source || 'unknown'}</span>
             </div>
-            ${metricsHtml}
-            ${classesHtml}
+            <div style="display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap;">${iconBar}</div>
             ${actionsHtml}
         </div>`;
     }
@@ -1036,9 +1258,20 @@ async function triggerFactoryReset() {
         if (r.success) {
             toast('System factory reset successfully!', 'success');
             document.getElementById('log-body').innerHTML = '';
-            document.getElementById('train-log-body').innerHTML = '<span style="color: #64748b;">[YOLO Retraining Terminal Idle]</span>';
+            document.getElementById('train-log-body').innerHTML = '<span style="color: var(--text-muted);">[YOLO Retraining Terminal Idle]</span>';
+            const tLogsBody = document.getElementById('terminal-logs-body');
+            const tTrainBody = document.getElementById('terminal-train-body');
+            if (tLogsBody) tLogsBody.innerHTML = '<div class="log-line">System reset. Waiting for pipeline events...</div>';
+            if (tTrainBody) tTrainBody.innerHTML = '<span style="color: var(--text-muted);">[Retraining Terminal Idle]</span>';
             document.getElementById('val-train-epoch').textContent = '—';
             document.getElementById('val-train-loss').textContent = '—';
+            // Reset pipeline tray too
+            const trayLabel = document.getElementById('pipeline-tray-current');
+            const trayBar = document.getElementById('pipeline-tray-progress');
+            const trayPct = document.getElementById('pipeline-tray-percentage');
+            if (trayLabel) trayLabel.textContent = 'Idle';
+            if (trayBar) trayBar.style.width = '0%';
+            if (trayPct) trayPct.textContent = '0%';
             // Reload all data
             hasDiscoveryRunThisSession = false;
             await Promise.all([loadStats(), loadModelVersions()]);
@@ -1047,3 +1280,11 @@ async function triggerFactoryReset() {
         toast(`Reset failed: ${e.message}`, 'error');
     }
 }
+
+// ── Select All Cluster Crops ─────────────────────────────────
+function toggleSelectAllCrops(clusterName, isChecked) {
+    const checkboxes = document.querySelectorAll('.crop-checkbox');
+    checkboxes.forEach(cb => { cb.checked = isChecked; });
+    updateBatchUI(clusterName);
+}
+

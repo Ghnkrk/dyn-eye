@@ -755,6 +755,28 @@ async def name_clusters(req: ClusterNamingRequest):
 
     manifest = load_json(manifest_path)
 
+    # Erase empty clusters from manifest and filesystem
+    clusters_to_remove = []
+    for cname, entry in list(manifest.get("clusters", {}).items()):
+        folder = cfg.CLUSTERS_DIR / cname
+        from src.utils.io_helpers import list_images
+        imgs = list_images(folder) if folder.exists() else []
+        
+        if len(entry.get("crops", [])) == 0 or len(imgs) == 0:
+            clusters_to_remove.append(cname)
+            
+    for cname in clusters_to_remove:
+        manifest.get("clusters", {}).pop(cname, None)
+        folder = cfg.CLUSTERS_DIR / cname
+        if folder.exists():
+            import shutil
+            try:
+                shutil.rmtree(str(folder))
+            except Exception:
+                pass
+        log.info(f"Erased empty cluster: {cname}")
+        LogStream.emit(f"Erased empty cluster: {cname}", level="info", source="system")
+
     updated = []
     for cluster_name, defect_name in req.names.items():
         if cluster_name in manifest.get("clusters", {}):

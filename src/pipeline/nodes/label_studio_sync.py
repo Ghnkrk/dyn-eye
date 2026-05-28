@@ -141,7 +141,7 @@ def label_studio_sync_node(state: dict) -> dict:
         "cluster_folders": {str(k): v for k, v in cluster_folders.items()},
         "instruction": "Use the DYN-EYE dashboard to review and name clusters.",
     }
-    save_json(sync_info, cfg.DATA_DIR / "label_studio_sync_pending.json")
+    save_json(sync_info, cfg.DATA_DIR / "manifest_save_pending.json")
 
     log.info(f"Manifest saved for {len(cluster_folders)} clusters. Ready for review in dashboard.")
 

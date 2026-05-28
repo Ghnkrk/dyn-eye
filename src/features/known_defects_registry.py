@@ -176,4 +176,4 @@ def register_from_data_yaml(yaml_path: str | Path | None = None) -> list[str]:
     if isinstance(names, dict):
         names = list(names.values())
 
-    return register_defects(names, source="label_studio_export")
+    return register_defects(names, source="dashboard_naming")

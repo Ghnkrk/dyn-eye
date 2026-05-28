@@ -11,18 +11,17 @@ build/
 .venv/
 venv/
 
-# Data (tracked by DVC)
+# Data (tracked by DVC — do not commit)
 data/
 !data/.gitkeep
 
-# Model artifacts
-models/*.pt
+# Model artifacts (large binaries — use DVC or releases)
+*.pt
 models/versions/
+models/label_studio/
 
-# Logs
+# Logs & training runs
 logs/
-
-# Training runs
 runs/
 
 # IDE
@@ -40,10 +39,10 @@ Thumbs.db
 # MLflow
 mlruns/
 
-# Environment
+# Environment secrets — NEVER commit
 .env
 
-# Docker Local Overrides
+# Docker local overrides
 docker-compose.override.yml
 .docker/
 
@@ -51,3 +50,12 @@ docker-compose.override.yml
 *.sqlite3
 *.sqlite3-journal
 .webassets-cache/
+
+# Scratch / temp
+*.tmp
+*.bak
+search_cols.py
+sample_images.py
+model.py
+test_yolo.py
+data details.txt

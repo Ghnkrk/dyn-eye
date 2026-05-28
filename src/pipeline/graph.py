@@ -60,12 +60,13 @@ def _wrap_node(name: str, fn):
     def wrapper(state: dict) -> dict:
         global _metrics
         label = NODE_LABELS.get(name, name)
+        source_name = "manifest_save" if name == "label_studio_sync" else name
 
         # Emit start event
         LogStream.emit(
             f"Starting {label}...",
             level="step",
-            source=name,
+            source=source_name,
         )
         if _metrics:
             _metrics.start_step(name)
@@ -93,7 +94,7 @@ def _wrap_node(name: str, fn):
             LogStream.emit(
                 f"{label} complete{suffix} — {items} items processed",
                 level="info",
-                source=name,
+                source=source_name,
                 data={"items_processed": items, "cached": cached},
             )
             return result
