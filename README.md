@@ -1,7 +1,7 @@
 # DYN-EYE — Autonomous Defect Discovery & Self-Learning Pipeline
 
 > **An end-to-end MLOps system** for industrial visual inspection.  
-> YOLO detects known defects; unknown/novel anomalies are extracted, clustered with HDBSCAN, labelled with Gemini VLM, and automatically fed back to fine-tune YOLO — closing the loop without human annotation.
+> YOLO detects known defects; unknown/novel anomalies are extracted, clustered with HDBSCAN, annotated with Gemma VLM (using domain-aware dynamic prompting), and automatically fed back to fine-tune YOLO — closing the loop with interactive dashboard curation.
 
 ---
 
@@ -18,8 +18,7 @@
 9. [Dashboard Guide](#dashboard-guide)
 10. [Pipeline Deep-Dive](#pipeline-deep-dive)
 11. [Retraining & Model Versioning](#retraining--model-versioning)
-12. [.gitignore Notes](#gitignore-notes)
-13. [Troubleshooting](#troubleshooting)
+12. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -30,9 +29,10 @@ Input Images ──► YOLO Inference ──► Known? ──► SKIP (already t
                                  └─► Unknown crop ──► DINOv2 Feature Extraction
                                                     ──► FAISS Novelty Filter
                                                     ──► HDBSCAN Clustering
-                                                    ──► Gemini VLM Labelling
+                                                    ──► Gemma VLM Annotation
+                                                    ──► Dashboard Review & Labelling
                                                     ──► YOLO Dataset Generation
-                                                    ──► Fine-tune YOLO (LoRA/full)
+                                                    ──► Fine-tune YOLO (full/selective)
                                                     ──► Deploy & version new model
 ```
 
@@ -40,18 +40,18 @@ Input Images ──► YOLO Inference ──► Known? ──► SKIP (already t
 
 ## Architecture
 
-| Layer | Technology |
-|---|---|
-| Object Detection | YOLOv8/v10/v11 (Ultralytics) |
-| Feature Extraction | DINOv2 ViT-S/14 (384-dim) |
-| Novelty Detection | FAISS IndexFlatL2 |
-| Clustering | HDBSCAN |
-| VLM Annotation | Google Gemini (`gemma-4-31b-it`) |
-| LLM Training Advisor | Groq (`llama-3.3-70b-versatile`) |
-| Pipeline Orchestration | LangGraph (stateful DAG) |
-| Experiment Tracking | MLflow |
-| Dashboard | FastAPI + Vanilla JS (SSE streaming) |
-| Packaging | `uv` (PEP 517, fast resolver) |
+| Layer | Technology | Role |
+|---|---|---|
+| **Object Detection** | YOLOv8/v10/v11 (Ultralytics) | Detects known defects using active model version |
+| **Feature Extraction** | DINOv2 ViT-S/14 (384-dim) | Embeds candidate crops into high-dimensional space |
+| **Novelty Detection** | FAISS IndexFlatL2 | Filters out known-looking crops based on registry embeddings |
+| **Clustering** | HDBSCAN | Groups remaining novel anomaly crops into clusters |
+| **VLM Annotation** | Google Gemini (`gemma-4-31b-it`) | Detects visual traits and annotates anomalies inside crops |
+| **LLM Advisor & Prompting** | Groq (`llama-3.3-70b-versatile`) | Generates dynamic VLM prompts & advises on retraining |
+| **Pipeline Orchestration** | LangGraph (stateful DAG) | Coordinates discovery and retraining runs |
+| **Experiment Tracking** | MLflow | Tracks model performance metrics and VLM runs |
+| **Dashboard** | FastAPI + Vanilla JS + CSS | Custom UI for cluster management, labeling, and training monitoring |
+| **Packaging** | `uv` (PEP 517, fast resolver) | Manages python environment and dependencies |
 
 ---
 
@@ -59,9 +59,10 @@ Input Images ──► YOLO Inference ──► Known? ──► SKIP (already t
 
 ```
 Protosem2/
-├── config.py                   # Central config — all paths, thresholds, API keys
-├── main.py                     # CLI entry point  (dashboard / pipeline / reset)
+├── config.py                   # Central config — paths, thresholds, and VLM settings
+├── main.py                     # CLI entry point (dashboard / discover / retrain / setup-faiss)
 ├── pyproject.toml              # uv-managed dependencies
+├── README.md                   # System documentation
 │
 ├── src/
 │   ├── pipeline/
@@ -73,42 +74,41 @@ Protosem2/
 │   │       ├── faiss_search.py         # Novelty filter vs. FAISS index
 │   │       ├── feature_extraction.py   # DINOv2 embedding
 │   │       ├── crop_extraction.py      # Bounding-box crop saver
-│   │       ├── hdbscan_cluster.py      # HDBSCAN + cluster management
-│   │       ├── vlm_annotation.py       # Gemini VLM labelling + caching
-│   │       └── label_studio_sync.py    # (legacy, unused)
+│   │       ├── hdbscan_cluster.py      # HDBSCAN clustering
+│   │       └── vlm_annotation.py       # Gemma VLM annotation & ICC scoring
 │   │
 │   ├── retraining/
 │   │   ├── agent.py            # LangGraph retraining agent
 │   │   ├── llm_advisor.py      # Groq LLM advisor (when/how to retrain)
-│   │   ├── model_registry.py   # Model versioning, rollback, FAISS sync
-│   │   └── tools/
-│   │       └── dvc_version.py  # DVC-backed dataset versioning
+│   │   └── model_registry.py   # Model versioning, rollback, and FAISS sync
 │   │
 │   ├── features/
-│   │   └── known_defects_registry.py   # Hot-reload known class list
+│   │   ├── known_defects_registry.py   # Hot-reload known class list
+│   │   └── faiss_index.py              # FAISS index construction/query
 │   │
 │   └── utils/
 │       ├── __init__.py         # Logger, LogStream, get_logger exports
 │       ├── logger.py           # Structured SSE log emitter
-│       └── metrics.py          # MLflow metric tracker
+│       ├── metrics.py          # MLflow metric tracker
+│       └── vlm_metrics.py      # VLM consistency & performance metrics logging
 │
 ├── dashboard/
-│   ├── app.py                  # FastAPI app factory
+│   ├── app.py                  # FastAPI app factory & routes
 │   └── static/
-│       ├── index.html          # Single-page dashboard
-│       ├── style.css           # Pitch-black dark theme
-│       └── app.js              # SSE client + all UI interactions
+│       ├── index.html          # Dashboard page (HTML5)
+│       ├── style.css           # Vanilla dark theme styling
+│       └── app.js              # SSE client + all UI interactions & stats
 │
 ├── data/                       # Runtime data (git-ignored, created automatically)
 │   ├── input_images/           # Drop inspection images here
 │   ├── crops/                  # YOLO-detected bounding-box crops
-│   ├── clusters/               # HDBSCAN cluster folders (one per cluster)
+│   ├── clusters/               # HDBSCAN cluster folders and cluster_manifest.json
 │   ├── faiss_index/            # FAISS index + label JSON
 │   ├── known_defect_crops/     # Per-class seed crops for FAISS bootstrapping
 │   ├── yolo_dataset/           # Auto-generated YOLO fine-tuning dataset
 │   ├── known_defects.json      # Active list of known defect class names
-│   ├── unknown_defects.json    # Detected unknown defect metadata
-│   └── vlm_cache.json          # VLM response cache (avoids duplicate API calls)
+│   ├── vlm_cache.json          # VLM response cache (avoids duplicate API calls)
+│   └── vlm_icc_cache.json      # VLM consistency (ICC) cache for fast demo runs
 │
 ├── models/
 │   ├── best.pt                 # Active YOLO model (symlink-like — replaced on deploy)
@@ -117,12 +117,7 @@ Protosem2/
 │   └── versions/               # Archived fine-tuned model checkpoints
 │
 ├── logs/                       # Runtime logs (git-ignored)
-├── runs/                       # YOLO training run artifacts (git-ignored)
-│
-├── Dockerfile
-├── docker-compose.yml
-├── .env                        # API keys (git-ignored — see below)
-└── .gitignore
+└── runs/                       # YOLO training run artifacts (git-ignored)
 ```
 
 ---
@@ -135,8 +130,6 @@ Protosem2/
 | CUDA | 13.0 | For PyTorch GPU (`torch==2.11.0+cu130`) |
 | `uv` | latest | `pip install uv` |
 | Git | any | For version control |
-
-> **CPU-only?** Replace `torch==2.11.0+cu130` and `torchvision==0.26.0+cu130` in `pyproject.toml` with the standard CPU wheels and remove the `[[tool.uv.index]]` block.
 
 ---
 
@@ -159,8 +152,6 @@ pip install uv
 uv sync
 ```
 
-> This installs PyTorch 2.11.0 + CUDA 13.0 from the PyTorch index automatically.
-
 ### 3. Create your `.env` file
 
 ```bash
@@ -170,8 +161,8 @@ GROQ_API_KEY=your_groq_api_key_here
 ```
 
 **API keys needed:**
-- **Gemini** → [aistudio.google.com](https://aistudio.google.com) — used for VLM annotation
-- **Groq** → [console.groq.com](https://console.groq.com) — used for LLM retraining advisor
+- **Gemini** → VLM anomaly annotation
+- **Groq** → LLM dynamic prompt generator and training advisor
 
 ### 4. Activate the environment
 
@@ -187,22 +178,16 @@ source .venv/bin/activate
 
 ## Folder & File Placement Guide
 
-> All directories are **auto-created** by `config.py` on first import. You only need to manually place the model weights.
+> All directories are **auto-created** by `config.py` on first import.
 
 ### Required: YOLO Model Weights
 
-Place your trained YOLOv8/v10/v11 model as:
+Place your baseline YOLO weights under `models/`:
 
 ```
 models/
 ├── best.pt           ← active model (used by pipeline)
 └── best_initial.pt   ← backup baseline (used by Factory Reset)
-```
-
-Both files must be present. If you only have one checkpoint, copy it to both names:
-
-```bash
-cp models/best.pt models/best_initial.pt
 ```
 
 ### Optional: Seed images for FAISS index
@@ -214,56 +199,28 @@ data/known_defect_crops/
 ├── inclusion/
 │   ├── crop_001.jpg
 │   └── crop_002.jpg
-├── scratch/
-│   └── crop_001.jpg
 └── <class_name>/
     └── ...
 ```
 
 The folder name becomes the class label. The FAISS index is built automatically when the pipeline first runs (or on Factory Reset).
 
-### Optional: Input Images
-
-Drop the images you want to inspect into:
-
-```
-data/input_images/
-├── frame_0001.jpg
-├── frame_0002.jpg
-└── ...
-```
-
-Or use the **dashboard drag-and-drop zone** to upload a folder at runtime.
-
-### Known Defects Registry
-
-On first run, `data/known_defects.json` is created automatically from the YOLO model's class names. Format:
-
-```json
-{
-  "defect_classes": ["inclusion", "scratch", "oil_spot", "..."]
-}
-```
-
-You can edit this file manually to add/remove classes before training.
-
 ---
 
 ## Configuration Reference
 
-All knobs live in `config.py`. Key settings:
+All parameters are configured in `config.py`. Key settings:
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `YOLO_CONFIDENCE_THRESHOLD` | `0.30` | Min YOLO confidence to count a detection |
-| `FAISS_NOVELTY_THRESHOLD` | `0.35` | L2 dist above which a crop is "unknown" |
-| `HDBSCAN_MIN_CLUSTER_SIZE` | `4` | Min crops to form a cluster |
-| `HDBSCAN_MIN_SAMPLES` | `2` | HDBSCAN core-point threshold |
-| `VLM_SLEEP_BETWEEN` | `4.5s` | Rate-limit pause between Gemini calls |
-| `YOLO_TRAIN_EPOCHS` | `1` | Default training epochs (overridable via dashboard) |
-| `FEATURE_DIM` | `384` | DINOv2 ViT-S/14 output dimension |
-| `LLM_MIN_CROPS_PER_CLASS` | `10` | Min crops before LLM advisor suggests retraining |
-| `DASHBOARD_PORT` | `8501` | Dashboard web server port |
+| `FAISS_NOVELTY_THRESHOLD` | `0.35` | L2 distance threshold above which a crop is "unknown/novel" |
+| `HDBSCAN_MIN_CLUSTER_SIZE` | `4` | Min crops required to form a cluster |
+| `HDBSCAN_MIN_SAMPLES` | `2` | HDBSCAN core-point density parameter |
+| `VLM_ICC_SAMPLES` | `5` | Number of representative crops evaluated for cluster consistency |
+| `VLM_SLEEP_BETWEEN` | `4.5` | Sleep delay (seconds) between VLM calls to avoid RPM limits |
+| `YOLO_TRAIN_EPOCHS` | `1` | Default epochs for YOLO retraining |
+| `FEATURE_DIM` | `384` | DINOv2 ViT-S/14 output feature dimension |
 
 ---
 
@@ -277,239 +234,102 @@ uv run python main.py dashboard
 
 Open → **http://localhost:8501**
 
-This starts the FastAPI server and serves the interactive dashboard where you can:
-- Upload images or point to the default dataset
-- Run the full discovery pipeline
-- Review clusters and confirm defect labels
-- Trigger YOLO fine-tuning
-- Manage model versions (deploy / rollback)
-- Factory reset the entire system
+The interactive dashboard serves as the central control panel to:
+- Upload new datasets or use default files
+- Trigger the discovery pipeline
+- Curate clusters, move/drop crops, and define defect names (labels)
+- Monitor YOLO retraining logs and deploy model versions
+- Reset the environment to its initial state
 
 ### Run Pipeline Headlessly
 
 ```bash
-uv run python main.py pipeline
+uv run python main.py discover
 ```
 
-Runs the full pipeline on `data/input_images/` without the dashboard.
+Runs the full pipeline on `data/input_images/` without launching the UI.
 
-### Factory Reset
+### Run with Cache (Fast Demo Mode)
 
 ```bash
-uv run python main.py reset
+uv run python main.py discover --use-cache
 ```
 
-Or click **Factory Reset** in the dashboard Settings. This:
-- Restores `models/best.pt` ← `models/best_initial.pt`
-- Resets `data/known_defects.json` to baseline classes
-- Clears all crops, clusters, YOLO dataset
-- Rebuilds FAISS index from `data/known_defect_crops/`
-- Clears the model version registry
+Skips actual YOLO inferences and VLM anomaly annotations by loading cached outputs from `data/vlm_cache.json` and `data/vlm_icc_cache.json`. This provides an instant pipeline demo.
 
 ---
 
 ## Dashboard Guide
 
-### Pipeline Control Panel (Left)
+### Pipeline Panel (Left)
+- **Known Defects**: List of classes registered in the current active model.
+- **Upload Zone**: Drag & drop images or use standard upload.
+- **Run Pipeline**: Executes the full LangGraph discovery sequence.
+- **VLM Prompt Viewer**: Non-intrusive collapsible panel displaying the dynamic prompt generated for the run.
 
-| Section | What it does |
-|---|---|
-| **Known Defects** | Auto-synced list of current model classes |
-| **Upload Zone** | Drag & drop images/folder → sets `data/input_images/` |
-| **Run Pipeline** | Triggers the full LangGraph DAG |
-| **Collapse ▬** | Minimises pipeline into a slim progress tray |
+### Cluster Management (Center)
+- Displays grouped crops representing novel anomalies.
+- **Rename & Label**: Click on a cluster card to name the anomaly class (labeling).
+- **Move / Drop**: Re-assign crops to other clusters or drop outliers/noise to prune the training dataset.
 
-### Discovery Pipeline (Steps)
-
-The pipeline tray shows real-time progress through nodes:
-
-1. YOLO Inference
-2. Crop Extraction
-3. Feature Extraction (DINOv2)
-4. FAISS Novelty Filter
-5. HDBSCAN Clustering
-6. VLM Annotation (Gemini)
-7. YOLO Dataset Generation
-8. Fine-tuning Ready
-
-### Cluster Editor
-
-After pipeline completes, each cluster appears as a card. Click a cluster to:
-- View all crops in that cluster
-- Set a defect label (name the class)
-- Move crops between clusters
-- Drop noisy/wrong crops
-- Delete empty clusters
-
-Confirming a cluster name adds it to the known defects registry and queues it for retraining.
-
-### Right Panel — Live Logs & Fine-tuning
-
-- **Live Pipeline Events** → SSE-streamed log of every pipeline step
-- **Fine-tuning Monitor** → Epoch-by-epoch YOLO training log
-- Click **Expand ↗** on either to open a full-screen terminal with pure-black background
-
-### Model Registry
-
-- Compact view shows the active model version
-- Click **Expand ✚** to open the full registry modal
-- Hover **🏷️** icon → see class list; hover **📊** → see metrics
-- Use **Deploy** / **Rollback** to switch active model versions
+### Execution Log & Retraining Monitor (Right)
+- **Live Logs**: Real-time SSE logs detailing pipeline steps and processing status.
+- **Retraining Panel**: Fine-tuning triggers, custom training parameter edits, and LLM advice.
 
 ---
 
 ## Pipeline Deep-Dive
 
 ### 1. YOLO Inference (`yolo_inference.py`)
-- Runs `best.pt` on every image in `data/input_images/`
-- Detections with confidence ≥ `YOLO_CONFIDENCE_THRESHOLD` and class in known defects → logged, skipped
-- All other bounding boxes → passed forward as **unknown candidates**
+- Runs the active YOLO model version (`models/best.pt`) on input images.
+- Detections matching known defects are skipped. Bounding boxes with unknown traits or low registry confidence are sent forward as **unknown defect candidates**.
 
 ### 2. Crop Extraction (`crop_extraction.py`)
-- Saves each unknown bounding box as a cropped JPG to `data/crops/`
-- Maintains `data/crop_to_source.json` for traceability
+- Extracts candidate bounding box crops and saves them to `data/crops/`.
+- Tracks crop mapping in `data/crop_to_source.json` to preserve spatial metadata.
 
 ### 3. Feature Extraction (`feature_extraction.py`)
-- Loads DINOv2 ViT-S/14 from `torch.hub`
-- Embeds each crop to a 384-dim L2-normalised vector
+- Generates 384-dimensional normalized feature embeddings using a pre-trained DINOv2 ViT-S/14 model.
 
 ### 4. FAISS Novelty Filter (`faiss_search.py`)
-- Queries the FAISS flat index of known-class embeddings
-- Squared L2 distance > `FAISS_NOVELTY_THRESHOLD` → truly novel
-- Known-looking crops are discarded here (reduces VLM cost)
+- Compares embeddings against the FAISS index of known defects.
+- Crops with an L2 distance greater than `FAISS_NOVELTY_THRESHOLD` are flagged as truly novel. Known-looking crops are filtered out to prevent redundant VLM cost.
 
 ### 5. HDBSCAN Clustering (`hdbscan_cluster.py`)
-- Groups novel crops into clusters using HDBSCAN
-- Creates `data/clusters/<cluster_N>/` folders
-- Empty clusters (noise points) are pruned automatically
+- Clusters remaining novel crops based on their embedding vectors.
+- Assigns crops to distinct cluster folders representing unique defect classes.
 
 ### 6. VLM Annotation (`vlm_annotation.py`)
-- Sends each cluster's representative crops to Gemini
-- Receives structured defect label + confidence
-- Results cached in `data/vlm_cache.json` to avoid re-billing
+- **Dynamic Prompting**: Groq (`llama-3.3-70b-versatile`) uses the dataset context (novelty ratio, known classes) to generate a custom, domain-aware VLM system prompt. If unavailable, it falls back to a static default.
+- **Anomaly Annotation**: Gemma VLM (`gemma-4-31b-it`) detects visual traits and draws bounding boxes on representative crops. It does **not** perform final labeling.
+- **Intra-Cluster Consistency (ICC)**: Measures consistency across a sample of 5 crops per cluster. Uses a smart retry backoff with linear scaling (up to 24s) to survive API rate-limits, and caches results to `vlm_icc_cache.json` for fast demo runs.
 
 ### 7. Dataset Generation & Fine-tuning
-- Confirmed clusters → YOLO format labels written to `data/yolo_dataset/`
-- `src/retraining/agent.py` runs the LangGraph retraining DAG
-- Groq LLM advisor recommends epochs/imgsz/batch or defers training
-- Fine-tuned model saved to `models/versions/` and deployed to `models/best.pt`
-- FAISS index rebuilt to include new class embeddings
+- Users review and approve defect names (final labels) in the dashboard.
+- The system generates YOLO annotation labels (`data/yolo_dataset/`).
+- The retraining agent trains YOLO on the augmented dataset and rebuilds the FAISS index with the new class seed embeddings.
 
 ---
 
 ## Retraining & Model Versioning
 
-Every fine-tuning run:
-1. Trains YOLO on the augmented dataset (base classes + new classes)
-2. Saves checkpoint → `models/versions/<version_id>/best.pt`
-3. Updates `models/registry.json` with metrics, class list, timestamp
-4. Rebuilds FAISS index for the new class set
-5. Deploys new model as `models/best.pt`
-
-**Rollback** swaps `best.pt` back to any previous version and rebuilds FAISS to match that version's class list.
-
----
-
-## .gitignore Notes
-
-The `.gitignore` is correctly structured. Key observations:
-
-| Pattern | Reason |
-|---|---|
-| `data/` + `!data/.gitkeep` | Runtime data excluded; placeholder keeps folder in git |
-| `models/*.pt` | Model weights (large binary) excluded |
-| `models/versions/` | Fine-tuned checkpoints excluded |
-| `logs/`, `runs/` | Training artifacts excluded |
-| `.env` | API keys never committed |
-| `.venv/` | Virtual environment excluded |
-| `*.dvc`, `dvc.lock` | DVC metadata excluded (use DVC remote for data) |
-| `mlruns/` | MLflow local store excluded |
-
-### ⚠️ Issues to fix before pushing
-
-1. **`models/best_initial.pt` is NOT ignored** — at 51 MB this will bloat the repo. Add to `.gitignore`:
-   ```
-   models/*.pt
-   ```
-   This already covers it — but ensure `best_initial.pt` hasn't been tracked yet:
-   ```bash
-   git rm --cached models/best_initial.pt models/best.pt 2>/dev/null
-   ```
-
-2. **`data/label_studio_sync_pending.json`** and **`data/manifest_save_pending.json`** are data-dir files that get generated at runtime — already covered by `data/` ignore.
-
-3. **`uv.lock`** (1.4 MB) — currently **not ignored** and should be committed (it's the lockfile equivalent of `poetry.lock`). This is correct — keep it.
-
-4. **`yolo26n.pt`** in project root — this 5.5 MB file is **NOT ignored**. Add it:
-   ```
-   # Add to .gitignore
-   *.pt
-   ```
-   Or move it into `models/` where it's already covered.
-
-5. **`__pycache__/`** in root — already in `.gitignore`, but run:
-   ```bash
-   git rm -r --cached __pycache__/ 2>/dev/null
-   ```
+1. **Fine-Tuning**: Trains the model on the expanded dataset.
+2. **Registry Tracking**: Registers model versions in `models/registry.json` along with training metadata, classes, and performance metrics.
+3. **Deployment**: Deploys the model as the active `models/best.pt` and updates the active FAISS index.
+4. **Rollback**: Restores any previous model checkpoint and rebuilds the FAISS index to align with that version's classes.
 
 ---
 
 ## Troubleshooting
 
-### Dashboard doesn't start
-```bash
-# Ensure port 8501 is free
-netstat -ano | findstr :8501
-# Then run
-uv run python main.py dashboard
-```
+### VLM Rate Limits (503 / High Demand)
+- The pipeline handles Gemini API 503 limits automatically via linear-exponential backoff (up to 24s).
+- You can manually clear the cache file `data/vlm_cache.json` to force fresh VLM calls.
+- If you hit rate limits frequently, verify `VLM_SLEEP_BETWEEN` is set to `4.5` or higher in `config.py`.
 
-### FAISS index empty / novelty filter broken
-```bash
-# Rebuild FAISS from scratch using known_defect_crops/
-uv run python -c "from src.retraining.model_registry import rebuild_faiss_index; rebuild_faiss_index()"
-```
-Or click **Factory Reset** in the dashboard.
-
-### VLM annotation stuck / skipping
-- Check `GEMINI_API_KEY` is set in `.env`
-- Check `data/vlm_cache.json` — delete it to force fresh annotations
-- Increase `VLM_SLEEP_BETWEEN` in `config.py` if hitting rate limits
-
-### Groq LLM advisor not triggering
-- Check `GROQ_API_KEY` is set in `.env`
-- Ensure clusters have ≥ `LLM_MIN_CROPS_PER_CLASS` (default: 10) crops
-
-### YOLO training fails
-- Verify `data/yolo_dataset/images/train/` has images
-- Check `runs/` for the YOLO training run log for the specific error
-- Reduce `YOLO_TRAIN_BATCH` in `config.py` if OOM
-
-### `torch` CUDA version mismatch
-```bash
-python -c "import torch; print(torch.version.cuda)"
-# Should print 13.0
-# If not, reinstall:
-uv sync --reinstall-package torch torchvision
-```
+### FAISS Index Out of Sync
+- Run `main.py setup-faiss` to manually rebuild the index from the seed crops.
+- Or click **Factory Reset** in the dashboard settings to restore clean defaults.
 
 ---
-
-## Quick-Start Checklist
-
-```
-✅ Clone repo
-✅ uv sync
-✅ Create .env with GEMINI_API_KEY and GROQ_API_KEY
-✅ Place models/best.pt  (your trained YOLOv8 checkpoint)
-✅ Place models/best_initial.pt  (copy of best.pt for factory reset)
-✅ (Optional) Seed data/known_defect_crops/<class>/ with example crops
-✅ Drop inspection images into data/input_images/
-✅ uv run python main.py dashboard
-✅ Open http://localhost:8501
-✅ Click Run Pipeline
-```
-
----
-
 *DYN-EYE — Autonomous Anomaly Detection & Self-Learning Pipeline*
