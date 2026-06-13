@@ -776,6 +776,53 @@ input:checked + .toggle-slider:before { transform: translateX(16px); }
     color: var(--warning);
 }
 
+.cluster-card--unassigned {
+    opacity: 0.55;
+    border-style: dotted;
+}
+.cluster-card--unassigned .cluster-badge {
+    background: var(--text-muted);
+    color: var(--text-secondary);
+}
+
+.cluster-skip-badge {
+    background: var(--error-soft);
+    color: var(--error);
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--error);
+    margin-left: auto;
+}
+
+.cluster-merge-row {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+    align-items: center;
+}
+
+.cluster-merge-select {
+    flex: 1;
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+    padding: 4px 6px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-light);
+    color: var(--text-primary);
+    outline: none;
+    cursor: pointer;
+}
+.cluster-merge-select:focus {
+    border-color: var(--accent);
+}
+
+
 /* ── Modal Overlay ────────────────────────────────────────── */
 .modal {
     position: fixed;

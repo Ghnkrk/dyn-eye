@@ -912,6 +912,101 @@ async def name_clusters(req: ClusterNamingRequest):
     }
 
 
+class MergeClustersRequest(BaseModel):
+    """Merge all crops from source_cluster into target_cluster."""
+    source_cluster: str   # cluster to dissolve
+    target_cluster: str   # cluster to absorb into
+    merged_label: str | None = None  # optional defect name for the merged cluster
+
+
+@app.post("/api/clusters/merge")
+async def merge_clusters(req: MergeClustersRequest):
+    """
+    Merge one cluster into another.
+
+    - All crops from source_cluster are moved (filesystem + manifest) to target_cluster.
+    - source_cluster folder and manifest entry are removed.
+    - If merged_label is provided it is applied to the target cluster.
+    - unlabeled clusters are NOT included in the defect_label_mapping written to disk,
+      so they are automatically skipped during YOLO fine-tuning.
+    """
+    import shutil
+
+    manifest = _load_and_sync_manifest()
+    clusters = manifest.get("clusters", {})
+
+    src = req.source_cluster
+    dst = req.target_cluster
+
+    if src not in clusters:
+        raise HTTPException(404, f"Source cluster '{src}' not found in manifest")
+    if dst not in clusters:
+        raise HTTPException(404, f"Target cluster '{dst}' not found in manifest")
+    if src == dst:
+        raise HTTPException(400, "Source and target clusters must be different")
+
+    src_entry = clusters[src]
+    dst_entry = clusters[dst]
+
+    # ── Move crops in manifest ─────────────────────────────────
+    src_crops = src_entry.get("crops", [])
+    dst_crops = dst_entry.setdefault("crops", [])
+
+    for crop in src_crops:
+        cfile = crop["crop_file"]
+        src_path = cfg.CLUSTERS_DIR / src / cfile
+        dst_path = cfg.CLUSTERS_DIR / dst / cfile
+
+        # Physical file move
+        if src_path.exists():
+            dst_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src_path), str(dst_path))
+
+        # Update crop metadata path reference
+        if "crop_path" in crop:
+            crop["crop_path"] = str(dst_path)
+
+        dst_crops.append(crop)
+
+    dst_entry["crop_count"] = len(dst_crops)
+
+    # Apply merged label if provided
+    if req.merged_label:
+        dst_entry["defect_name"] = req.merged_label
+
+    # ── Remove source cluster ──────────────────────────────────
+    clusters.pop(src, None)
+    src_folder = cfg.CLUSTERS_DIR / src
+    if src_folder.exists():
+        try:
+            shutil.rmtree(str(src_folder))
+        except Exception as e:
+            log.warning(f"Could not delete source cluster folder '{src}': {e}")
+
+    log.info(
+        f"Merged cluster '{src}' ({len(src_crops)} crops) into '{dst}' "
+        f"(now {dst_entry['crop_count']} crops)"
+    )
+    LogStream.emit(
+        f"Merged '{src}' into '{dst}' — {dst_entry['crop_count']} total crops",
+        level="info", source="dashboard",
+    )
+
+    save_json(manifest, cfg.CLUSTERS_DIR / "cluster_manifest.json")
+
+    # Rebuild flat label mapping — unlabeled clusters are excluded automatically
+    label_mapping = _build_label_mapping(manifest)
+    mapping_path = cfg.DATA_DIR / "defect_label_mapping.json"
+    save_json({"run_id": manifest.get("run_id"), "labels": label_mapping}, mapping_path)
+
+    return {
+        "message": f"Merged '{src}' into '{dst}'",
+        "target_cluster": dst,
+        "merged_crop_count": dst_entry["crop_count"],
+        "total_labeled_crops": len(label_mapping),
+    }
+
+
 class BatchEditCropsRequest(BaseModel):
     """Request to perform a batch action on multiple crops in a cluster."""
     crop_files: list[str]

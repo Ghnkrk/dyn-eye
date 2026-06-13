@@ -555,42 +555,124 @@ function renderClusters(clusters) {
         return;
     }
 
+    // Build name options for merge dropdowns (exclude noise/unassigned)
+    const mergeTargetOptions = clusters
+        .filter(c => c.name !== 'noise' && c.name !== 'unassigned')
+        .map(c => `<option value="${c.name}">${c.name} (${c.image_count} crops)</option>`)
+        .join('');
+
     let html = '';
     for (const c of clusters) {
-        const isNoise = c.name === 'noise';
+        const isNoise      = c.name === 'noise';
+        const isUnassigned = c.name === 'unassigned';
+        const isSpecial    = isNoise || isUnassigned;
+
         const thumbs = (c.images || []).slice(0, 4).map(img =>
             `<img src="/api/clusters/${c.name}/${img}" class="cluster-thumb" alt="${img}" />`
         ).join('');
 
+        // Merge dropdown — other clusters only
+        const mergeOpts = clusters
+            .filter(other => other.name !== c.name && !['noise','unassigned'].includes(other.name))
+            .map(other => `<option value="${other.name}">${other.name} (${other.image_count})</option>`)
+            .join('');
+        const mergeSelect = (!isSpecial && mergeOpts)
+            ? `<select class="cluster-merge-select" id="merge-into-${c.name}" title="Merge this cluster into another">
+                   <option value="">⊕ Merge into…</option>
+                   ${mergeOpts}
+               </select>`
+            : '';
+
         html += `
-        <div class="cluster-card${isNoise ? ' cluster-card--noise' : ''}">
+        <div class="cluster-card${isNoise ? ' cluster-card--noise' : ''}${isUnassigned ? ' cluster-card--unassigned' : ''}" id="card-${c.name}">
             <div class="cluster-card-header" onclick="openClusterModal('${c.name}')" style="cursor:pointer;" title="Click to view and edit cluster images">
                 <span class="cluster-badge">${c.name}</span>
                 <span class="cluster-count-badge">${c.image_count} crops</span>
             </div>
             <div class="cluster-thumbs" onclick="openClusterModal('${c.name}')" style="cursor:pointer;" title="Click to view and edit cluster images">${thumbs}</div>
-            ${isNoise ? '' : `<div class="cluster-name-row">
+            ${isSpecial ? '' : `
+            <div class="cluster-name-row">
                 <input type="text" class="cluster-name-input" id="cname-${c.name}"
-                       placeholder="Enter defect name…" spellcheck="false" />
+                       placeholder="Label this defect class… (blank = skip training)" spellcheck="false" />
+                <span class="cluster-skip-badge" id="skip-badge-${c.name}" title="This cluster has no label — it will be excluded from YOLO fine-tuning">⊘ skipped</span>
+            </div>
+            <div class="cluster-merge-row">
+                ${mergeSelect}
+                ${mergeSelect ? `<button class="btn btn--ghost btn--sm" onclick="doMerge('${c.name}')" title="Execute merge">→ Merge</button>` : ''}
             </div>`}
         </div>`;
     }
 
+    // Action bar with training summary
     html += `
     <div style="grid-column:1/-1; display:flex; gap:8px; align-items:center; margin-top:4px; flex-wrap:wrap;">
         <button class="btn btn--primary" onclick="submitClusterNames()">
-            💾 Save Cluster Names
+            💾 Save Labels & Build Training Set
         </button>
         <span class="cluster-save-status" id="cluster-save-status"></span>
+        <span id="training-summary" style="margin-left:auto; font-size:0.78rem; opacity:0.7;"></span>
     </div>`;
 
     grid.innerHTML = html;
+
+    // Attach live-update listeners to inputs → update skip badges
+    document.querySelectorAll('.cluster-name-input').forEach(inp => {
+        const clusterId = inp.id.replace('cname-', '');
+        inp.addEventListener('input', () => updateSkipBadge(clusterId, inp.value));
+        updateSkipBadge(clusterId, inp.value);
+    });
+    updateTrainingSummary();
+}
+
+// ── Skip badge helper ───────────────────────────────────────
+function updateSkipBadge(clusterId, value) {
+    const badge = document.getElementById(`skip-badge-${clusterId}`);
+    if (!badge) return;
+    badge.style.display = value.trim() ? 'none' : 'inline';
+    updateTrainingSummary();
+}
+
+function updateTrainingSummary() {
+    const inputs = document.querySelectorAll('.cluster-name-input');
+    let labeled = 0, skipped = 0;
+    inputs.forEach(inp => inp.value.trim() ? labeled++ : skipped++);
+    const el = document.getElementById('training-summary');
+    if (el) el.textContent = `${labeled} labeled → training  |  ${skipped} unlabeled → skipped`;
+}
+
+// ── Merge clusters ──────────────────────────────────────────
+async function doMerge(sourceCluster) {
+    const sel = document.getElementById(`merge-into-${sourceCluster}`);
+    if (!sel || !sel.value) { toast('Select a target cluster first', 'error'); return; }
+    const targetCluster = sel.value;
+
+    // Optional: carry label from source input if filled
+    const labelInput = document.getElementById(`cname-${sourceCluster}`);
+    const mergedLabel = (labelInput && labelInput.value.trim()) || null;
+
+    const confirmed = confirm(
+        `Merge all crops from "${sourceCluster}" into "${targetCluster}"?\n` +
+        `The source cluster will be removed.${mergedLabel ? `\nLabel applied: "${mergedLabel}"` : ''}`
+    );
+    if (!confirmed) return;
+
+    try {
+        const r = await post('/api/clusters/merge', {
+            source_cluster: sourceCluster,
+            target_cluster: targetCluster,
+            merged_label: mergedLabel || null,
+        });
+        toast(`✓ Merged "${sourceCluster}" → "${targetCluster}" (${r.merged_crop_count} crops)`, 'success');
+        await loadStats();
+    } catch (e) {
+        toast(`Merge failed: ${e.message}`, 'error');
+    }
 }
 
 async function submitClusterNames() {
     const inputs = document.querySelectorAll('.cluster-name-input');
     const names = {};
-    let empty = 0;
+    let skipped = 0;
 
     inputs.forEach(inp => {
         const clusterId = inp.id.replace('cname-', '');
@@ -598,26 +680,27 @@ async function submitClusterNames() {
         if (val) {
             names[clusterId] = val;
         } else {
-            empty++;
+            skipped++;
         }
     });
 
     if (Object.keys(names).length === 0) {
-        toast('Enter at least one cluster name', 'error');
+        toast('Label at least one cluster to build a training set', 'error');
         return;
     }
 
     try {
         const r = await post('/api/clusters/name', { names });
-        toast(`Saved ${r.updated_clusters.length} cluster names → ${r.total_labeled_crops} crops labeled`, 'success');
+        const skipMsg = skipped > 0 ? ` | ${skipped} cluster(s) skipped from training` : '';
+        toast(`Saved ${r.updated_clusters.length} labels → ${r.total_labeled_crops} crops in training set${skipMsg}`, 'success');
         document.getElementById('cluster-save-status').textContent =
-            `✓ ${r.total_labeled_crops} crops mapped to defect labels`;
+            `✓ ${r.total_labeled_crops} crops mapped · ${skipped} cluster(s) excluded`;
         document.getElementById('cluster-save-status').style.color = 'var(--success)';
-        
+
         // Trigger Retraining Advisor panel immediately
         showLLMAdvisorRetrainWorkflow();
     } catch (e) {
-        toast(`Failed to save names: ${e.message}`, 'error');
+        toast(`Failed to save labels: ${e.message}`, 'error');
     }
 }
 

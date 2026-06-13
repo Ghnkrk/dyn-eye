@@ -129,23 +129,20 @@ def _dbcv_grid_search(
 
     base = cfg.HDBSCAN_MIN_CLUSTER_SIZE
     
-    # Scale candidates dynamically up to 50% of the dataset size to prevent over-segmentation
-    mcs_candidates = set([
-        max(2, base - 1),
-        base,
+    # Candidates: from small (tight clusters) up to n_samples//5 (broad clusters).
+    # Capped at //5 to avoid forcing all crops into 1-2 giant, low-cohesion blobs.
+    mcs_candidates = sorted(set([
+        max(2, base),
         max(2, base + 2),
         max(2, int(np.sqrt(n_samples))),
         max(2, n_samples // 10),
         max(2, n_samples // 8),
         max(2, n_samples // 6),
         max(2, n_samples // 5),
-        max(2, n_samples // 4),
-        max(2, n_samples // 3),
-        max(2, n_samples // 2),
-    ])
-    mcs_candidates = sorted([m for m in mcs_candidates if m < n_samples and m > 1])
+    ]))
+    mcs_candidates = [m for m in mcs_candidates if 1 < m < n_samples]
     
-    ms_candidates = [1, 2, 3, 4, 5]
+    ms_candidates = [1, 2, 3]
 
     best_score = -np.inf
     best_mcs, best_ms = base, cfg.HDBSCAN_MIN_SAMPLES
@@ -178,10 +175,11 @@ def _dbcv_grid_search(
             except Exception:
                 continue
 
-    # Fallback if no valid score was found during grid search
+    # Fallback: DBCV returned NaN/inf for all candidates (common with PCA reduction).
+    # Prefer smaller mcs — produces tighter, more cohesive clusters.
     if best_score == -np.inf:
-        log.warning("Grid search yielded no finite DBCV scores — trying largest mcs as fallback")
-        for mcs in reversed(mcs_candidates):
+        log.warning("Grid search yielded no finite DBCV scores — using smallest-mcs fallback")
+        for mcs in mcs_candidates:  # ascending order → smallest first
             try:
                 clusterer = hdbscan.HDBSCAN(
                     min_cluster_size=mcs,
@@ -193,11 +191,11 @@ def _dbcv_grid_search(
                 )
                 labels = clusterer.fit_predict(features)
                 n_clusters = len(set(labels) - {-1})
-                if 1 <= n_clusters <= 3:
+                if 2 <= n_clusters <= max(8, n_samples // 5):
                     best_mcs = mcs
                     best_ms = min(2, mcs)
                     best_score = 0.0
-                    log.info(f"Fallback selected mcs={mcs} to target {n_clusters} clusters.")
+                    log.info(f"Fallback selected mcs={mcs} → {n_clusters} clusters.")
                     break
             except Exception:
                 continue
