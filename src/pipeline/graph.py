@@ -33,7 +33,8 @@ from src.pipeline.nodes.crop_extraction import crop_extraction_node
 from src.pipeline.nodes.feature_extraction import feature_extraction_node
 from src.pipeline.nodes.faiss_search import faiss_search_node
 from src.pipeline.nodes.hdbscan_cluster import hdbscan_cluster_node
-from src.pipeline.nodes.label_studio_sync import label_studio_sync_node
+from src.pipeline.nodes.dataset_context import dataset_context_node
+from src.pipeline.nodes.manifest_save import manifest_save_node
 
 log = get_logger("pipeline.graph")
 
@@ -46,7 +47,8 @@ NODE_LABELS = {
     "feature_extraction": "DINOv2 Features",
     "faiss_search": "FAISS Novelty Search",
     "hdbscan_cluster": "HDBSCAN Clustering",
-    "label_studio_sync": "Manifest Save",
+    "dataset_context": "Dynamic VLM Prompt (Groq)",
+    "manifest_save": "Manifest Save + ICC Metrics",
 }
 
 
@@ -60,7 +62,7 @@ def _wrap_node(name: str, fn):
     def wrapper(state: dict) -> dict:
         global _metrics
         label = NODE_LABELS.get(name, name)
-        source_name = "manifest_save" if name == "label_studio_sync" else name
+        source_name = name
 
         # Emit start event
         LogStream.emit(
@@ -77,7 +79,7 @@ def _wrap_node(name: str, fn):
             # Heuristic: count items processed based on known output keys
             for key in ["unknown_image_paths", "vlm_annotations", "crop_paths",
                         "feature_crop_paths", "novel_indices", "cluster_folders",
-                        "label_studio_task_ids"]:
+                        "vlm_cluster_results"]:
                 if key in result:
                     val = result[key]
                     if isinstance(val, (list, dict)):
@@ -120,23 +122,37 @@ def build_discovery_graph() -> StateGraph:
     graph = StateGraph(PipelineState)
 
     # Add nodes (wrapped with metrics + log streaming)
-    graph.add_node("yolo_inference", _wrap_node("yolo_inference", yolo_inference_node))
-    graph.add_node("vlm_annotation", _wrap_node("vlm_annotation", vlm_annotation_node))
-    graph.add_node("crop_extraction", _wrap_node("crop_extraction", crop_extraction_node))
-    graph.add_node("feature_extraction", _wrap_node("feature_extraction", feature_extraction_node))
-    graph.add_node("faiss_search", _wrap_node("faiss_search", faiss_search_node))
-    graph.add_node("hdbscan_cluster", _wrap_node("hdbscan_cluster", hdbscan_cluster_node))
-    graph.add_node("label_studio_sync", _wrap_node("label_studio_sync", label_studio_sync_node))
+    graph.add_node("yolo_inference",    _wrap_node("yolo_inference",    yolo_inference_node))
+    graph.add_node("vlm_annotation",    _wrap_node("vlm_annotation",    vlm_annotation_node))
+    graph.add_node("crop_extraction",   _wrap_node("crop_extraction",   crop_extraction_node))
+    graph.add_node("feature_extraction",_wrap_node("feature_extraction",feature_extraction_node))
+    graph.add_node("faiss_search",      _wrap_node("faiss_search",      faiss_search_node))
+    graph.add_node("hdbscan_cluster",   _wrap_node("hdbscan_cluster",   hdbscan_cluster_node))
+    graph.add_node("dataset_context",   _wrap_node("dataset_context",   dataset_context_node))
+    graph.add_node("manifest_save",       _wrap_node("manifest_save",       manifest_save_node))
 
-    # Define edges (linear chain)
-    graph.add_edge(START, "yolo_inference")
-    graph.add_edge("yolo_inference", "vlm_annotation")
-    graph.add_edge("vlm_annotation", "crop_extraction")
-    graph.add_edge("crop_extraction", "feature_extraction")
+    # Correct pipeline DAG:
+    #
+    #   START
+    #     → yolo_inference        (detect unknown images)
+    #     → dataset_context       (build context, call Groq → dynamic VLM prompt)
+    #     → vlm_annotation        (bbox detection using dynamic/static prompt)
+    #     → crop_extraction       (extract defect patches from bbox coords)
+    #     → feature_extraction    (DINOv2 384-d embeddings)
+    #     → faiss_search          (novelty filter)
+    #     → hdbscan_cluster       (group novel crops, fingerprint registry)
+    #     → manifest_save        (manifest save + ICC annotation + metrics)
+    #     → END
+    #
+    graph.add_edge(START,                "yolo_inference")
+    graph.add_edge("yolo_inference",     "dataset_context")
+    graph.add_edge("dataset_context",    "vlm_annotation")
+    graph.add_edge("vlm_annotation",     "crop_extraction")
+    graph.add_edge("crop_extraction",    "feature_extraction")
     graph.add_edge("feature_extraction", "faiss_search")
-    graph.add_edge("faiss_search", "hdbscan_cluster")
-    graph.add_edge("hdbscan_cluster", "label_studio_sync")
-    graph.add_edge("label_studio_sync", END)
+    graph.add_edge("faiss_search",       "hdbscan_cluster")
+    graph.add_edge("hdbscan_cluster",    "manifest_save")
+    graph.add_edge("manifest_save",       END)
 
     return graph.compile()
 

@@ -47,16 +47,26 @@ class PipelineState(TypedDict, total=False):
     faiss_distances: list[float]         # Distance to nearest known cluster
     faiss_is_novel: list[bool]           # True if distance > threshold
     novel_indices: list[int]             # Indices of novel crops
+    total_detected_crops: int            # Total crop count before novelty filter
 
     # ── Node 6: HDBSCAN Clustering ───────────────────────────
     cluster_labels: list[int]            # Cluster ID per novel crop (-1 = noise)
     cluster_folders: dict[int, str]      # cluster_id → folder path
     num_clusters: int
+    cluster_registry: dict               # Loaded cluster fingerprint registry
+    cluster_tuned_params: dict           # Best (min_cluster_size, min_samples) from DBCV grid search
+    unassigned_crop_paths: list[str]     # Noise crops too far from any centroid
+    dbcv_score: float                    # DBCV validity index of final clustering
+    registry_hits: int                   # Clusters matched existing fingerprints
+    registry_total: int                  # Total clusters (for hit rate)
 
-    # ── Node 7: Label Studio Sync ────────────────────────────
-    label_studio_project_id: int | None
-    label_studio_task_ids: list[int]
+    # ── Node 6.5: Dataset Context (Part 2) ───────────────────
+    dataset_context: dict                # Run context snapshot for dynamic prompt generation
+    vlm_system_prompt: str               # Groq-generated Gemini system prompt
+
+    # ── Node 7: Manifest Save + ICC Metrics ─────────────────
+    vlm_cluster_results: list[dict]      # Per-cluster ICC + label results (Part 3)
 
     # ── Metadata ─────────────────────────────────────────────
-    run_id: str
+    run_id: str                          # Short UUID for this pipeline run
     errors: list[str]                    # Accumulated errors across nodes

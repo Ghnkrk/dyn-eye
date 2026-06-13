@@ -6,7 +6,7 @@
  *  - Light/Dark theme toggle with persistence
  *  - Pipeline status tracking from live logs
  *  - Cache mode toggle for fast demo runs
- *  - In-dashboard cluster editing (no Label Studio needed)
+ *  - In-dashboard cluster editing
  *  - Fully autonomous — minimal user interaction
  */
 
@@ -342,17 +342,17 @@ function handleDropEvent(e) {
 
 // ── Pipeline Status from Logs ───────────────────────────────
 const SOURCE_TO_NODE_ID = {
-    'yolo_inference': 'yolo_inference',
-    'vlm_annotation': 'vlm_annotation',
-    'crop_extraction': 'crop_extraction',
-    'feature_extraction': 'feature_extraction',
-    'faiss_search': 'faiss_search',
-    'hdbscan_cluster': 'hdbscan_cluster',
-    'label_studio_sync': 'save_manifest',
-    'manifest_save': 'save_manifest',
-    'llm_advisor': 'llm_advisor',
-    'yolo_train': 'train_yolo',
-    'train_yolo': 'train_yolo'
+    'yolo_inference':    'yolo_inference',
+    'dataset_context':   'dataset_context',
+    'vlm_annotation':   'vlm_annotation',
+    'crop_extraction':  'crop_extraction',
+    'feature_extraction':'feature_extraction',
+    'faiss_search':     'faiss_search',
+    'hdbscan_cluster':  'hdbscan_cluster',
+    'manifest_save':    'save_manifest',
+    'llm_advisor':      'llm_advisor',
+    'yolo_train':       'train_yolo',
+    'train_yolo':       'train_yolo'
 };
 
 const NODE_NAMES = Object.keys(SOURCE_TO_NODE_ID);
@@ -370,8 +370,18 @@ function updatePipelineFromLog(evt) {
         hasDiscoveryRunThisSession = true;
         // Reset all nodes
         Object.values(SOURCE_TO_NODE_ID).forEach(nodeId => setNodeState(nodeId, ''));
+        setNodeState('dataset_context', '');
+        // Reset dynamic prompt badge
+        const badge = document.getElementById('prompt-badge');
+        if (badge) { badge.className = 'prompt-badge'; badge.title = 'Groq LLM generated a domain-aware VLM detection prompt'; }
         // Clear cluster display immediately to prevent showing stale data
         clearClusters();
+        
+        // Show micro widget
+        const mw = document.getElementById('micro-running-widget');
+        const ms = document.getElementById('micro-running-step');
+        if (mw) mw.style.display = 'flex';
+        if (ms) ms.textContent = 'Initializing...';
     }
 
     if (evt.message.includes('pipeline finished') || evt.message.includes('pipeline complete')) {
@@ -380,6 +390,10 @@ function updatePipelineFromLog(evt) {
         document.getElementById('btn-discover').disabled = false;
         pipelineRunning = false;
         loadStats();
+        
+        // Hide micro widget
+        const mw = document.getElementById('micro-running-widget');
+        if (mw) mw.style.display = 'none';
     }
 
     if (evt.message.includes('pipeline failed')) {
@@ -387,17 +401,20 @@ function updatePipelineFromLog(evt) {
         setDiscoveryStatus('failed', 'Failed');
         document.getElementById('btn-discover').disabled = false;
         pipelineRunning = false;
+        
+        // Hide micro widget
+        const mw = document.getElementById('micro-running-widget');
+        if (mw) mw.style.display = 'none';
     }
 
     // Update individual nodes
-    if (NODE_NAMES.includes(source)) {
+    if (source in SOURCE_TO_NODE_ID) {
         const nodeId = SOURCE_TO_NODE_ID[source];
         if (evt.level === 'step' && (evt.message.includes('Starting') || evt.message.includes('running') || evt.message.includes('Triggering'))) {
             setNodeState(nodeId, 'active');
         }
         if (evt.level === 'info' && (evt.message.includes('complete') || evt.message.includes('saved') || evt.message.includes('finished') || evt.message.includes('deployed') || evt.message.includes('Ready for review'))) {
             setNodeState(nodeId, 'done');
-            // Show cached indicator
             if (evt.data && evt.data.cached) {
                 const detail = document.getElementById(`pd-${nodeId}`);
                 if (detail) detail.textContent = `${evt.data.items_processed} items (cached)`;
@@ -410,6 +427,20 @@ function updatePipelineFromLog(evt) {
             setNodeState(nodeId, 'fail');
         }
     }
+
+    // ── Dynamic prompt badge ─────────────────────────────────
+    if (source === 'dataset_context') {
+        const badge = document.getElementById('prompt-badge');
+        if (!badge) return;
+        if (evt.message.includes('Dynamic VLM detection prompt generated via Groq')) {
+            badge.className = 'prompt-badge active';
+            badge.title = '⚡ Groq LLM generated a domain-aware VLM detection prompt for this run';
+        } else if (evt.message.includes('Static VLM detection prompt will be used')) {
+            badge.className = 'prompt-badge fallback';
+            badge.textContent = '— static';
+            badge.title = 'Groq unavailable — using static fallback prompt';
+        }
+    }
 }
 
 function setNodeState(name, state) {
@@ -419,6 +450,15 @@ function setNodeState(name, state) {
     if (state) el.classList.add(`pipe-node--${state}`);
     // Also update the minimized tray if collapsed
     if (!pipelineExpanded) updatePipelineTray();
+
+    // Update micro running widget
+    const mw = document.getElementById('micro-running-widget');
+    const ms = document.getElementById('micro-running-step');
+    if (state === 'active' && mw && ms) {
+        mw.style.display = 'flex';
+        const stepName = el.querySelector('.pipe-name') ? el.querySelector('.pipe-name').textContent : name;
+        ms.textContent = stepName + '...';
+    }
 }
 
 function setGlobalStatus(status, text) {
@@ -469,6 +509,17 @@ async function loadStats() {
         const known = cfg.known_defect_names || [];
         document.getElementById('s-known').textContent = known.length || '0';
         document.getElementById('cfg-known-defects').textContent = known.length ? known.join(', ') : 'None';
+
+        // Load manifest dynamically to update VLM system prompt viewer
+        try {
+            const manifest = await get('/api/clusters/manifest');
+            const promptEl = document.getElementById('vlm-prompt-text');
+            if (promptEl && manifest && manifest.vlm_system_prompt) {
+                promptEl.textContent = manifest.vlm_system_prompt;
+            }
+        } catch (err) {
+            // Manifest not found/loaded yet, fail silently
+        }
 
         // Only render clusters if pipeline isn't running and discovery has run in this session
         if (!clusters.pipeline_running) {
@@ -1249,12 +1300,15 @@ async function submitCustomRetraining() {
 }
 
 async function triggerFactoryReset() {
-    if (!confirm('⚠️ SYSTEM FACTORY RESET WARNING:\n\nThis will completely reset the DYN-EYE system back to its initial state:\n- Swaps active model back to YOLO v1.\n- Sets known defect categories to 6 initial classes.\n- Deletes all fine-tuned model versions and history.\n- Clears all crop & cluster directories.\n- Rebuilds a clean FAISS index from the 6 initial classes.\n\nAre you absolutely sure you want to proceed?')) {
+    if (!confirm('⚠️ SYSTEM FACTORY RESET WARNING:\n\nThis will completely reset the DYN-EYE system back to its initial state:\n- Swaps active model back to YOLO v1.\n- Sets known defect categories to 6 initial classes.\n- Deletes all fine-tuned model versions and history.\n- Clears cluster directories.\n- Rebuilds a clean FAISS index from the 6 initial classes.\n\nAre you absolutely sure you want to proceed?')) {
         return;
     }
+
+    const deleteCrops = confirm('Do you also want to permanently delete the extracted crops history?\n\nClick OK to DELETE crops.\nClick Cancel to KEEP crops.');
+
     try {
         toast('Factory resetting system...', 'info');
-        const r = await post('/api/system/reset-all', {});
+        const r = await post('/api/system/reset-all', { delete_crops: deleteCrops });
         if (r.success) {
             toast('System factory reset successfully!', 'success');
             document.getElementById('log-body').innerHTML = '';

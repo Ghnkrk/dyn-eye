@@ -26,7 +26,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 import config as cfg
 from src.utils import get_logger
 from src.utils.metrics import MetricsTracker
-# No Label Studio export needed
 from src.retraining.tools.dataset_validator import validate_yolo_dataset
 from src.retraining.tools.dvc_version import version_dataset
 from src.retraining.tools.train_yolo import train_yolo
@@ -46,7 +45,7 @@ log = get_logger("retraining_agent")
 
 class RetrainingState(TypedDict, total=False):
     # Input
-    project_id: int              # Label Studio project ID
+    project_id: int              # (legacy field, unused)
     epochs: int
     imgsz: int
     batch_size: int
@@ -479,7 +478,7 @@ def run_retraining_pipeline(
     Run the complete retraining pipeline.
 
     Args:
-        project_id: Label Studio project ID with completed annotations
+        project_id: (legacy, unused)
         epochs: Training epochs
         imgsz: Training image size
         batch_size: Training batch size

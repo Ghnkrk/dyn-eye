@@ -105,6 +105,20 @@ FAISS_NOVELTY_THRESHOLD = 0.35  # Squared L2 distance above which = novel/unknow
 HDBSCAN_MIN_CLUSTER_SIZE = 4
 HDBSCAN_MIN_SAMPLES = 2
 HDBSCAN_METRIC = "euclidean"
+HDBSCAN_CLUSTER_SELECTION_METHOD = "leaf"
+
+# ── Cluster fingerprint registry (Part 1) ──
+CLUSTER_REGISTRY_PATH = CLUSTERS_DIR / "cluster_registry.json"
+CLUSTER_TUNING_CACHE_PATH = CLUSTERS_DIR / "tuning_cache.json"
+CLUSTER_MATCH_THRESHOLD = 0.30       # Cosine distance below which a new cluster inherits an existing label
+CLUSTER_NOISE_REASSIGN_THRESHOLD = 0.50  # Cosine dist threshold for reassigning noise points to nearest centroid
+
+# ── UMAP / dimensionality reduction ──
+UMAP_N_COMPONENTS = 5
+UMAP_N_NEIGHBORS = 15
+UMAP_MIN_DIST = 0.1
+UMAP_RANDOM_STATE = 42
+UMAP_BATCH_THRESHOLD = 50  # Use UMAP above this many crops, PCA below
 
 # ============================================================
 # (Label Studio removed — cluster editing is done in the dashboard)
@@ -153,3 +167,15 @@ YOLO_TRAIN_PATIENCE = 20
 YOLO_TRAIN_OPTIMIZER = "auto"
 YOLO_TRAIN_COS_LR = False
 YOLO_TRAIN_FREEZE = None
+
+# ============================================================
+# VLM DYNAMIC PROMPT SETTINGS (Part 2)
+# ============================================================
+VLM_PROMPT_CACHE_PATH = DATA_DIR / "vlm_prompt_cache.json"
+INSPECTION_DOMAIN = os.environ.get("INSPECTION_DOMAIN", "unknown")
+
+# ============================================================
+# VLM METRICS (Part 3)
+# ============================================================
+VLM_METRICS_PATH = DATA_DIR / "vlm_metrics.json"
+VLM_ICC_SAMPLES = 5   # Number of crops to sample per cluster for ICC scoring

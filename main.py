@@ -43,7 +43,6 @@ Commands:
     )
     parser.add_argument("--images-dir", default=None, help="Input images directory")
     parser.add_argument("--model", default=None, help="YOLO model path")
-    parser.add_argument("--project-id", type=int, default=None, help="Label Studio project ID")
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--use-cache", action="store_true",
@@ -83,7 +82,6 @@ Commands:
     elif args.command == "retrain":
         from src.retraining.agent import run_retraining_pipeline
         result = run_retraining_pipeline(
-            project_id=args.project_id,
             epochs=args.epochs,
         )
         training = result.get("training_result", {})

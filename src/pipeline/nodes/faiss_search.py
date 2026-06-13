@@ -41,6 +41,7 @@ def faiss_search_node(state: dict) -> dict:
             "faiss_distances": [],
             "faiss_is_novel": [],
             "novel_indices": [],
+            "total_detected_crops": 0,
         }
 
     manager = FAISSIndexManager()
@@ -58,6 +59,7 @@ def faiss_search_node(state: dict) -> dict:
             "faiss_distances": [float("inf")] * n,
             "faiss_is_novel": [True] * n,
             "novel_indices": list(range(n)),
+            "total_detected_crops": n,
         }
 
     distances, is_novel = manager.infer_batch(features)
@@ -71,4 +73,5 @@ def faiss_search_node(state: dict) -> dict:
         "faiss_distances": distances,
         "faiss_is_novel": is_novel,
         "novel_indices": novel_indices,
+        "total_detected_crops": len(features),
     }

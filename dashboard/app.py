@@ -286,9 +286,13 @@ async def faiss_rebuild():
         raise HTTPException(500, f"FAISS rebuild failed: {e}")
 
 
+class ResetRequest(BaseModel):
+    delete_crops: bool = True
+
 @app.post("/api/system/reset-all")
-async def system_reset_all():
+async def system_reset_all(request: ResetRequest = None):
     """Reset everything to the initial state: YOLO v1, 6 known classes, pristine FAISS."""
+    delete_crops = request.delete_crops if request else True
     LogStream.emit("Initiating universal system reset...", level="step", source="system")
     try:
         import shutil
@@ -366,7 +370,11 @@ async def system_reset_all():
         LogStream.emit("Known defect classes reset to 6 initial categories", level="info", source="system")
 
         # 5. Clear crops and clusters directories
-        for folder in [cfg.CROPS_DIR, cfg.CLUSTERS_DIR]:
+        folders_to_clear = [cfg.CLUSTERS_DIR]
+        if delete_crops:
+            folders_to_clear.append(cfg.CROPS_DIR)
+            
+        for folder in folders_to_clear:
             if folder.exists():
                 for item in folder.iterdir():
                     if item.is_dir():
@@ -397,7 +405,10 @@ async def system_reset_all():
         if flat_map.exists():
             flat_map.unlink()
 
-        LogStream.emit("Crops, clusters, and fine-tuning datasets cleared", level="info", source="system")
+        msg = "Clusters and fine-tuning datasets cleared"
+        if delete_crops:
+            msg = "Crops, clusters, and fine-tuning datasets cleared"
+        LogStream.emit(msg, level="info", source="system")
 
         # 7. Restore FAISS index from pristine backup files instantly!
         backup_index = cfg.FAISS_INDEX_DIR / "known_defects.index.backup"
@@ -728,13 +739,104 @@ async def serve_crop_image(filename: str):
 # NOTE: These specific routes MUST be defined BEFORE the
 # parameterized /api/clusters/{cluster_name}/{filename} route
 
-@app.get("/api/clusters/manifest")
-async def get_cluster_manifest():
-    """Get the cluster manifest with full traceability info."""
+def _load_and_sync_manifest() -> dict:
+    """
+    Load the cluster manifest and dynamically synchronize it with the directories
+    physically present on disk. Automatically backfills missing folders like
+    'unassigned' or 'noise' to prevent UI edit failures.
+    """
     manifest_path = cfg.CLUSTERS_DIR / "cluster_manifest.json"
     if not manifest_path.exists():
         raise HTTPException(404, "No cluster manifest found. Run the discovery pipeline first.")
-    return JSONResponse(load_json(manifest_path))
+
+    try:
+        manifest = load_json(manifest_path)
+    except Exception as e:
+        raise HTTPException(500, f"Failed to load cluster manifest: {e}")
+
+    modified = False
+    if "vlm_system_prompt" not in manifest:
+        from src.pipeline.nodes.vlm_annotation import SYSTEM_PROMPT as STATIC_PROMPT
+        manifest["vlm_system_prompt"] = STATIC_PROMPT
+        modified = True
+
+    clusters_dir = cfg.CLUSTERS_DIR
+    if clusters_dir.exists():
+        # Load crop_to_source mapping if available to restore source images and bboxes
+        crop_to_source = {}
+        cts_path = cfg.DATA_DIR / "crop_to_source.json"
+        if cts_path.exists():
+            try:
+                crop_to_source = load_json(cts_path)
+            except Exception:
+                pass
+
+        for folder in clusters_dir.iterdir():
+            if folder.is_dir() and folder.name not in ("__pycache__",):
+                folder_name = folder.name
+                if folder_name not in manifest.setdefault("clusters", {}):
+                    from src.utils.io_helpers import list_images
+                    images = list_images(folder)
+
+                    if folder_name == "unassigned":
+                        cluster_id = -2
+                    elif folder_name == "noise":
+                        cluster_id = -1
+                    else:
+                        try:
+                            cluster_id = int(folder_name.replace("cluster_", ""))
+                        except ValueError:
+                            cluster_id = -99
+
+                    cluster_entry = {
+                        "cluster_id": cluster_id,
+                        "crop_count": len(images),
+                        "defect_name": None,
+                        "crops": [],
+                    }
+
+                    for img_path in images:
+                        crop_name = img_path.stem
+                        cts = crop_to_source.get(crop_name, {})
+                        source_img = cts.get("source_image", "")
+
+                        box_2d_raw = []
+                        if "bbox_normalized" in cts:
+                            cx, cy, w, h = cts["bbox_normalized"]
+                            ymin, xmin = cy - h / 2, cx - w / 2
+                            ymax, xmax = cy + h / 2, cx + w / 2
+                            box_2d_raw = [int(ymin * 1000), int(xmin * 1000), int(ymax * 1000), int(xmax * 1000)]
+
+                        cluster_entry["crops"].append({
+                            "crop_file": img_path.name,
+                            "crop_path": str(img_path),
+                            "source_image": source_img,
+                            "source_image_name": Path(source_img).name if source_img else "",
+                            "box_2d_pixels": [],
+                            "box_2d_raw": box_2d_raw,
+                            "physical_traits": "",
+                            "crop_width": 0,
+                            "crop_height": 0,
+                        })
+
+                    manifest["clusters"][folder_name] = cluster_entry
+                    modified = True
+                    log.info(f"Backfilled missing cluster '{folder_name}' into manifest")
+
+        if modified:
+            try:
+                save_json(manifest, manifest_path)
+            except Exception as e:
+                log.warning(f"Failed to save auto-synced manifest: {e}")
+
+    return manifest
+
+
+@app.get("/api/clusters/manifest")
+async def get_cluster_manifest():
+    """Get the cluster manifest with full traceability info."""
+    manifest = _load_and_sync_manifest()
+    return JSONResponse(manifest)
 
 
 class ClusterNamingRequest(BaseModel):
@@ -749,11 +851,7 @@ async def name_clusters(req: ClusterNamingRequest):
     Updates the cluster manifest and returns the mapping
     from crop files to source images with bbox coordinates.
     """
-    manifest_path = cfg.CLUSTERS_DIR / "cluster_manifest.json"
-    if not manifest_path.exists():
-        raise HTTPException(404, "No cluster manifest found")
-
-    manifest = load_json(manifest_path)
+    manifest = _load_and_sync_manifest()
 
     # Erase empty clusters from manifest and filesystem
     clusters_to_remove = []
@@ -784,7 +882,7 @@ async def name_clusters(req: ClusterNamingRequest):
             updated.append(cluster_name)
             log.info(f"Named cluster '{cluster_name}' → '{defect_name}'")
 
-    save_json(manifest, manifest_path)
+    save_json(manifest, cfg.CLUSTERS_DIR / "cluster_manifest.json")
 
     # Build a flat mapping for downstream use
     label_mapping = []
@@ -827,11 +925,7 @@ async def batch_edit_crops(req: BatchEditCropsRequest):
     """
     Perform a batch operation (move or drop) on multiple crops from a cluster.
     """
-    manifest_path = cfg.CLUSTERS_DIR / "cluster_manifest.json"
-    if not manifest_path.exists():
-        raise HTTPException(404, "No cluster manifest found")
-
-    manifest = load_json(manifest_path)
+    manifest = _load_and_sync_manifest()
 
     src_cluster = req.source_cluster
     if src_cluster not in manifest.get("clusters", {}):
@@ -882,7 +976,7 @@ async def batch_edit_crops(req: BatchEditCropsRequest):
                 src_path.unlink()
         log.info(f"Batch dropped {len(target_crops_map)} crops from '{src_cluster}'")
 
-    save_json(manifest, manifest_path)
+    save_json(manifest, cfg.CLUSTERS_DIR / "cluster_manifest.json")
 
     # Build flat mapping for downstream use
     label_mapping = _build_label_mapping(manifest)
@@ -911,11 +1005,7 @@ async def edit_crop(req: EditCropRequest):
     Move a crop to another cluster or drop/delete it from the cluster.
     Updates the manifest and flat defect label mapping.
     """
-    manifest_path = cfg.CLUSTERS_DIR / "cluster_manifest.json"
-    if not manifest_path.exists():
-        raise HTTPException(404, "No cluster manifest found")
-
-    manifest = load_json(manifest_path)
+    manifest = _load_and_sync_manifest()
 
     # 1. Find the crop in source cluster
     src_cluster = req.source_cluster
@@ -970,7 +1060,7 @@ async def edit_crop(req: EditCropRequest):
             src_path.unlink()
         log.info(f"Dropped crop '{req.crop_file}' from '{src_cluster}'")
 
-    save_json(manifest, manifest_path)
+    save_json(manifest, cfg.CLUSTERS_DIR / "cluster_manifest.json")
 
     # 3. Build a flat mapping for downstream use
     label_mapping = _build_label_mapping(manifest)

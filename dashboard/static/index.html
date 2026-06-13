@@ -80,6 +80,26 @@
         #log-body   { max-height: 200px !important; overflow-y: auto !important; }
         #train-log-body-wrap { max-height: 160px !important; overflow-y: auto !important; }
         @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+        /* Dynamic prompt badge */
+        .prompt-badge {
+            display: none;
+            align-items: center;
+            gap: 4px;
+            font-size: 0.6rem;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            padding: 2px 7px;
+            border-radius: 999px;
+            background: rgba(16,185,129,0.12);
+            border: 1px solid rgba(16,185,129,0.35);
+            color: #10b981;
+            white-space: nowrap;
+            margin-left: 6px;
+        }
+        .prompt-badge.active   { display: inline-flex; animation: fadeIn 0.4s ease; }
+        .prompt-badge.fallback { display: inline-flex; background: rgba(113,113,122,0.12); border-color: rgba(113,113,122,0.3); color: #71717a; }
+        @keyframes fadeIn { from{opacity:0;transform:translateY(-3px)} to{opacity:1;transform:translateY(0)} }
     </style>
 </head>
 <body>
@@ -194,6 +214,17 @@
                         🎥 Camera Feed
                     </button>
                 </div>
+
+                <!-- Micro Running Widget -->
+                <div id="micro-running-widget" style="display: none; margin-top: 16px; background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.2); border-radius: 8px; padding: 10px 14px; align-items: center; gap: 12px; transition: all 0.3s ease;">
+                    <svg class="running-wheel" viewBox="0 0 100 100" width="20" height="20" style="animation: spin 1.5s linear infinite;">
+                        <circle cx="50" cy="50" r="35" stroke="var(--success)" stroke-width="12" fill="none" stroke-linecap="round" stroke-dasharray="140 60"></circle>
+                    </svg>
+                    <div style="flex: 1;">
+                        <div style="font-size: 0.65rem; color: var(--text-secondary); text-transform: uppercase; font-weight: 700; letter-spacing: 0.05em; margin-bottom: 2px;">Currently Running</div>
+                        <div id="micro-running-step" style="font-size: 0.85rem; color: var(--success); font-family: var(--font-mono); font-weight: 600;">Idle</div>
+                    </div>
+                </div>
             </div>
 
             <!-- Pipeline Flow -->
@@ -202,7 +233,7 @@
                     <div class="card-title">Discovery Pipeline</div>
                     <button class="btn btn--outline btn--sm" id="btn-toggle-pipeline" onclick="togglePipelineView()" style="font-size: 0.75rem; padding: 4px 8px;">Collapse ▬</button>
                 </div>
-                
+
                 <!-- Expanded vertical nodes list -->
                 <div class="pipeline-flow" id="pipe-flow">
                     <div class="pipe-node" id="pn-yolo_inference">
@@ -215,8 +246,26 @@
                     </div>
                     <div class="pipe-connector"></div>
 
+                    <div class="pipe-node" id="pn-dataset_context" style="flex-direction: column; align-items: stretch; gap: 8px;">
+                        <div style="display: flex; align-items: center; justify-content: space-between; width: 100%;">
+                            <div style="display: flex; align-items: center; gap: 12px;">
+                                <div class="pipe-idx">2</div>
+                                <div>
+                                    <div class="pipe-name">Dynamic Prompt <span class="prompt-badge" id="prompt-badge" title="Groq LLM generated a domain-aware VLM detection prompt">&#x26A1; Groq</span></div>
+                                    <div class="pipe-detail" id="pd-dataset_context">Build context &amp; generate VLM prompt</div>
+                                </div>
+                            </div>
+                            <div class="pipe-right"><span class="pipe-latency" id="pl-dataset_context">—</span></div>
+                        </div>
+                        <details style="margin-left: 36px; margin-top: 4px; font-size: 0.72rem; border: 1px solid var(--border-light); border-radius: 6px; background: rgba(0,0,0,0.15); width: calc(100% - 36px);">
+                            <summary style="cursor: pointer; font-weight: 500; color: var(--text-muted); padding: 4px 8px; outline: none; user-select: none;">🔍 View VLM System Prompt</summary>
+                            <pre id="vlm-prompt-text" style="white-space: pre-wrap; font-family: monospace; font-size: 0.65rem; max-height: 120px; overflow-y: auto; margin: 0; padding: 8px; background: #070709; border-top: 1px solid var(--border-light); color: var(--text-secondary);">No prompt loaded yet.</pre>
+                        </details>
+                    </div>
+                    <div class="pipe-connector"></div>
+
                     <div class="pipe-node" id="pn-vlm_annotation">
-                        <div class="pipe-idx">2</div>
+                        <div class="pipe-idx">3</div>
                         <div>
                             <div class="pipe-name">VLM Annotation</div>
                             <div class="pipe-detail" id="pd-vlm_annotation">Sequential bbox detection</div>
@@ -226,7 +275,7 @@
                     <div class="pipe-connector"></div>
 
                     <div class="pipe-node" id="pn-crop_extraction">
-                        <div class="pipe-idx">3</div>
+                        <div class="pipe-idx">4</div>
                         <div>
                             <div class="pipe-name">Crop Extraction</div>
                             <div class="pipe-detail" id="pd-crop_extraction">Extract defect patches</div>
@@ -236,7 +285,7 @@
                     <div class="pipe-connector"></div>
 
                     <div class="pipe-node" id="pn-feature_extraction">
-                        <div class="pipe-idx">4</div>
+                        <div class="pipe-idx">5</div>
                         <div>
                             <div class="pipe-name">DINOv2 Features</div>
                             <div class="pipe-detail" id="pd-feature_extraction">384-d embeddings</div>
@@ -533,6 +582,6 @@
 <div id="floating-tooltip"></div>
 <div class="toast-wrap" id="toast-wrap"></div>
 
-<script src="/static/app.js?v=4.1.0"></script>
+<script src="/static/app.js?v=4.3.0"></script>
 </body>
 </html>

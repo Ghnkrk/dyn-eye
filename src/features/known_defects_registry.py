@@ -9,7 +9,7 @@ hardcoded list.
 The registry grows automatically:
     - After a YOLO model is fine-tuned and deployed, the new model's
       class names are merged into the registry.
-    - When Label Studio exports produce a class map, those names are
+    - When new defect names are confirmed via the dashboard, those names are
       merged too.
 
 File format (data/known_defects.json):
@@ -99,7 +99,7 @@ def register_defects(
     Args:
         new_names:  Class names to add (duplicates are silently ignored).
         source:     Where the names came from (e.g. "yolo_model",
-                    "label_studio_export", "manual").
+                    "dashboard_naming", "manual").
 
     Returns:
         List of names that were **actually added** (i.e. were new).
@@ -161,7 +161,7 @@ def register_from_data_yaml(yaml_path: str | Path | None = None) -> list[str]:
     """
     Read class names from a YOLO data.yaml and register them.
 
-    This is useful after Label Studio export produces a new data.yaml.
+    This is useful after model deployment produces a new data.yaml.
     """
     import yaml
 
