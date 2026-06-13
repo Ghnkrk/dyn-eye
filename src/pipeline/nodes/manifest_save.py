@@ -137,88 +137,119 @@ def manifest_save_node(state: dict) -> dict:
     log.info(f"Crop-to-source mapping saved to {cfg.DATA_DIR / 'crop_to_source.json'}")
     log.info(f"Manifest saved for {len(cluster_folders)} clusters. Ready for review in dashboard.")
 
-    # ── 3. ICC annotation per cluster ────────────────────────
+    # ── 3. Statistical ICC from feature embeddings ────────────
+    # Computes the real Intraclass Correlation Coefficient (one-way random
+    # effects) using the DINOv2 feature vectors already in the pipeline state.
+    # No VLM API calls required — pure NumPy, deterministic, sub-millisecond.
+    #
+    # Per-cluster score: mean cosine similarity of each crop to its centroid
+    #   → 1.0 = all crops in cluster are identical in feature space (perfect cohesion)
+    #   → 0.0 = crops are scattered / orthogonal (no cohesion)
+    #
+    # Global ICC: one-way ANOVA decomposition across all clusters
+    #   ICC = (MS_between - MS_within) / (MS_between + (k0-1) * MS_within)
+    from src.utils import LogStream
+
     cluster_results: list[dict] = []
-    vlm_system_prompt = state.get("vlm_system_prompt")
-    use_cache = state.get("use_cache", False)
-    cache_path = cfg.DATA_DIR / "vlm_icc_cache.json"
 
-    if use_cache and cache_path.exists():
-        try:
-            from src.utils import load_json
-            cluster_results = load_json(cache_path)
-            msg_cache = f"Cache mode — loaded {len(cluster_results)} ICC results from cache"
-            log.info(msg_cache)
-            from src.utils import LogStream
-            LogStream.emit(msg_cache, level="info", source="manifest_save")
-        except Exception as e:
-            log.warning(f"Failed to load ICC cache: {e}. Falling back to live API.")
-            cluster_results = []
+    try:
+        import numpy as np
 
-    if not cluster_results:
-        try:
-            import config as _cfg
-            from src.pipeline.nodes.vlm_annotation import (
-                _annotate_cluster_for_icc,
-                SYSTEM_PROMPT as _STATIC_PROMPT,
-            )
-            from google import genai
-            from google.genai import types
-            from pydantic import BaseModel
+        feature_vectors = state.get("feature_vectors")   # (N, 384)
+        cluster_labels  = state.get("cluster_labels")    # (N,) int, -1 = noise
+        novel_indices   = state.get("novel_indices", []) # indices into feature_vectors
 
-            class _Report(BaseModel):
-                anomalies_found: bool
-                findings: list
+        if feature_vectors is None or cluster_labels is None:
+            raise ValueError("feature_vectors or cluster_labels not in state")
 
-            client  = genai.Client()
-            gen_cfg = types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=_Report,
-                temperature=_cfg.VLM_TEMPERATURE,
-            )
-            active_prompt = vlm_system_prompt or _STATIC_PROMPT
+        feat = np.asarray(feature_vectors)
+        labels = np.asarray(cluster_labels)
 
-            msg_start = f"Starting ICC verification on {len(cluster_folders)} clusters ({_cfg.VLM_ICC_SAMPLES} samples/cluster)"
-            log.info(msg_start)
-            from src.utils import LogStream
-            LogStream.emit(msg_start, level="info", source="manifest_save")
+        # Restrict to novel crops only (same subset used for clustering)
+        if novel_indices:
+            feat   = feat[novel_indices]
+            labels = labels  # cluster_labels already covers only novel crops
 
-            for cid_key, folder in cluster_folders.items():
-                cid = int(cid_key) if isinstance(cid_key, str) else cid_key
-                if cid == -1:
-                    continue
-                try:
-                    result = _annotate_cluster_for_icc(
-                        folder, client, gen_cfg, active_prompt,
-                        n_samples=_cfg.VLM_ICC_SAMPLES,
-                    )
-                    cluster_results.append(result)
-                    log.info(
-                        f"  Cluster {cid}: label='{result['label']}', "
-                        f"ICC={result['icc']:.2f}, confidence={result['confidence']:.2f}"
-                    )
-                except Exception as e:
-                    log.warning(f"ICC scoring failed for cluster {cid}: {e}")
-                    cluster_results.append({
-                        "label": "error", "confidence": 0.0,
-                        "icc": 1.0, "n_samples": 0, "labels_seen": [],
-                    })
+        # L2-normalise so cosine similarity = dot product
+        norms = np.linalg.norm(feat, axis=1, keepdims=True)
+        norms = np.where(norms == 0, 1.0, norms)
+        feat_norm = feat / norms
 
-            if cluster_results:
-                avg_icc = sum(r.get("icc", 1.0) for r in cluster_results) / len(cluster_results)
-                msg_end = f"ICC verification complete. Average consistency: {avg_icc:.2f}"
-                log.info(msg_end)
-                LogStream.emit(msg_end, level="info", source="manifest_save")
-                
-                # Save to cache file
-                try:
-                    save_json(cluster_results, cache_path)
-                    log.info(f"Saved {len(cluster_results)} ICC results to cache at {cache_path}")
-                except Exception as e:
-                    log.warning(f"Failed to save ICC cache: {e}")
+        valid_ids = sorted(set(int(l) for l in labels) - {-1})
 
-        except Exception as e:
-            log.warning(f"ICC annotation phase failed (non-fatal): {e}")
+        if not valid_ids:
+            raise ValueError("No valid (non-noise) clusters found")
+
+        msg_start = f"Computing statistical ICC for {len(valid_ids)} clusters using embedding cohesion"
+        log.info(msg_start)
+        LogStream.emit(msg_start, level="info", source="manifest_save")
+
+        # ── Per-cluster cohesion score ──────────────────────────
+        group_vecs: list[np.ndarray] = []
+        for cid in valid_ids:
+            mask = labels == cid
+            g = feat_norm[mask]                    # (n_i, 384)
+            group_vecs.append(g)
+
+            if len(g) == 0:
+                cohesion = 0.0
+            elif len(g) == 1:
+                cohesion = 1.0                     # trivially cohesive
+            else:
+                centroid = g.mean(axis=0)
+                centroid /= max(np.linalg.norm(centroid), 1e-9)
+                cohesion = float(np.clip(g @ centroid, 0, 1).mean())
+
+            cluster_results.append({
+                "cluster_id": cid,
+                "label": f"cluster_{cid:03d}",
+                "icc": round(cohesion, 4),
+                "confidence": round(cohesion, 4),
+                "n_samples": int(mask.sum()),
+                "labels_seen": [],
+            })
+            log.info(f"  Cluster {cid}: cohesion={cohesion:.4f}  (n={mask.sum()})")
+
+        # ── Global one-way ANOVA ICC ────────────────────────────
+        all_vecs = feat_norm                       # (N, D)
+        grand_mean = all_vecs.mean(axis=0)
+        K = len(valid_ids)
+        N = len(all_vecs)
+
+        ss_between = sum(
+            len(g) * float(np.sum((g.mean(axis=0) - grand_mean) ** 2))
+            for g in group_vecs
+        )
+        ss_within = sum(
+            float(np.sum((g - g.mean(axis=0)) ** 2))
+            for g in group_vecs
+        )
+        df_b = K - 1
+        df_w = N - K
+
+        if df_b > 0 and df_w > 0 and ss_within > 0:
+            ms_b = ss_between / df_b
+            ms_w = ss_within / df_w
+            # Unequal-n correction factor k0
+            k0 = (N - sum(len(g) ** 2 for g in group_vecs) / N) / df_b
+            denom = ms_b + max(k0 - 1, 0) * ms_w
+            global_icc = float(np.clip((ms_b - ms_w) / denom if denom > 0 else 0.0, 0.0, 1.0))
+        else:
+            global_icc = 1.0 if K == 1 else 0.0
+
+        avg_cohesion = sum(r["icc"] for r in cluster_results) / len(cluster_results)
+        msg_end = (
+            f"ICC complete — global ICC={global_icc:.4f}, "
+            f"mean per-cluster cohesion={avg_cohesion:.4f}"
+        )
+        log.info(msg_end)
+        LogStream.emit(msg_end, level="info", source="manifest_save")
+
+        # Attach global score to state so vlm_metrics can log it
+        state["global_icc"] = global_icc
+
+    except Exception as e:
+        log.warning(f"Statistical ICC failed (non-fatal): {e}")
 
     # ── 4. Log VLM metrics ───────────────────────────────────
     if cluster_results:
@@ -230,6 +261,7 @@ def manifest_save_node(state: dict) -> dict:
                 registry_hits=state.get("registry_hits", 0),
                 registry_total=state.get("registry_total", 0),
                 run_id=run_id,
+                global_icc=state.get("global_icc"),
             )
         except Exception as e:
             log.warning(f"VLM metrics logging failed (non-fatal): {e}")
