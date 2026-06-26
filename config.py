@@ -102,10 +102,10 @@ FAISS_NOVELTY_THRESHOLD = 0.35  # Squared L2 distance above which = novel/unknow
 # ============================================================
 # HDBSCAN SETTINGS
 # ============================================================
-HDBSCAN_MIN_CLUSTER_SIZE = 4
-HDBSCAN_MIN_SAMPLES = 2
+HDBSCAN_MIN_CLUSTER_SIZE = 3   # Lowered from 4 — allows smaller clusters to form
+HDBSCAN_MIN_SAMPLES = 1        # Lowered from 2 — reduces noise points aggressively
 HDBSCAN_METRIC = "euclidean"
-HDBSCAN_CLUSTER_SELECTION_METHOD = "leaf"
+HDBSCAN_CLUSTER_SELECTION_METHOD = "eom"  # Changed from leaf — better for varied density
 
 # ── Cluster fingerprint registry (Part 1) ──
 CLUSTER_REGISTRY_PATH = CLUSTERS_DIR / "cluster_registry.json"
@@ -114,11 +114,11 @@ CLUSTER_MATCH_THRESHOLD = 0.30       # Cosine distance below which a new cluster
 CLUSTER_NOISE_REASSIGN_THRESHOLD = 0.50  # Cosine dist threshold for reassigning noise points to nearest centroid
 
 # ── UMAP / dimensionality reduction ──
-UMAP_N_COMPONENTS = 5
-UMAP_N_NEIGHBORS = 15
-UMAP_MIN_DIST = 0.1
+UMAP_N_COMPONENTS = 10       # More components = more separable space for 4+ classes
+UMAP_N_NEIGHBORS = 20        # Higher = more global structure (better for 200+ crops)
+UMAP_MIN_DIST = 0.05         # Tighter clusters (was 0.1)
 UMAP_RANDOM_STATE = 42
-UMAP_BATCH_THRESHOLD = 50  # Use UMAP above this many crops, PCA below
+UMAP_BATCH_THRESHOLD = 30    # Activate UMAP earlier (was 50)
 
 # ============================================================
 # (Label Studio removed — cluster editing is done in the dashboard)

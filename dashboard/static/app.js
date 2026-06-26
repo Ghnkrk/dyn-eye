@@ -373,7 +373,11 @@ function updatePipelineFromLog(evt) {
         setNodeState('dataset_context', '');
         // Reset dynamic prompt badge
         const badge = document.getElementById('prompt-badge');
-        if (badge) { badge.className = 'prompt-badge'; badge.title = 'Groq LLM generated a domain-aware VLM detection prompt'; }
+        if (badge) {
+            badge.className = 'prompt-badge';
+            badge.innerHTML = '&#x26A1; Groq';
+            badge.title = 'Groq LLM generated a domain-aware VLM detection prompt';
+        }
         // Clear cluster display immediately to prevent showing stale data
         clearClusters();
         
@@ -434,10 +438,11 @@ function updatePipelineFromLog(evt) {
         if (!badge) return;
         if (evt.message.includes('Dynamic VLM detection prompt generated via Groq')) {
             badge.className = 'prompt-badge active';
+            badge.innerHTML = '&#x26A1; Groq';
             badge.title = '⚡ Groq LLM generated a domain-aware VLM detection prompt for this run';
         } else if (evt.message.includes('Static VLM detection prompt will be used')) {
             badge.className = 'prompt-badge fallback';
-            badge.textContent = '— static';
+            badge.textContent = '⚠️ static';
             badge.title = 'Groq unavailable — using static fallback prompt';
         }
     }
@@ -521,6 +526,17 @@ async function loadStats() {
             // Manifest not found/loaded yet, fail silently
         }
 
+        // Update global metrics display if clusters exist
+        const metricsEl = document.getElementById('cluster-global-metrics');
+        if (metricsEl && clusters.clusters && clusters.clusters.length > 0) {
+            document.getElementById('m-global-icc').textContent = (clusters.global_icc || 0).toFixed(4);
+            document.getElementById('m-global-silhouette').textContent = (clusters.global_silhouette || 0).toFixed(4);
+            document.getElementById('m-mean-cohesion').textContent = (clusters.mean_cohesion || 0).toFixed(4);
+            metricsEl.style.display = 'flex';
+        } else if (metricsEl) {
+            metricsEl.style.display = 'none';
+        }
+
         // Only render clusters if pipeline isn't running and discovery has run in this session
         if (!clusters.pipeline_running) {
             if (hasDiscoveryRunThisSession) {
@@ -583,16 +599,26 @@ function renderClusters(clusters) {
                </select>`
             : '';
 
+        let cohesionHtml = '';
+        if (c.cohesion !== undefined && c.cohesion !== null && !isSpecial) {
+            const pct = Math.round(c.cohesion * 100);
+            cohesionHtml = `<span class="cluster-cohesion-badge" title="Embedding cohesion (internal visual consistency of the cluster). 100% is perfect homogeneity.">${pct}% cohesion</span>`;
+        }
+
         html += `
         <div class="cluster-card${isNoise ? ' cluster-card--noise' : ''}${isUnassigned ? ' cluster-card--unassigned' : ''}" id="card-${c.name}">
             <div class="cluster-card-header" onclick="openClusterModal('${c.name}')" style="cursor:pointer;" title="Click to view and edit cluster images">
                 <span class="cluster-badge">${c.name}</span>
-                <span class="cluster-count-badge">${c.image_count} crops</span>
+                <div style="display:flex; align-items:center; gap:6px;">
+                    <span class="cluster-count-badge">${c.image_count} crops</span>
+                    ${cohesionHtml}
+                </div>
             </div>
             <div class="cluster-thumbs" onclick="openClusterModal('${c.name}')" style="cursor:pointer;" title="Click to view and edit cluster images">${thumbs}</div>
             ${isSpecial ? '' : `
             <div class="cluster-name-row">
                 <input type="text" class="cluster-name-input" id="cname-${c.name}"
+                       value="${c.defect_name || ''}"
                        placeholder="Label this defect class… (blank = skip training)" spellcheck="false" />
                 <span class="cluster-skip-badge" id="skip-badge-${c.name}" title="This cluster has no label — it will be excluded from YOLO fine-tuning">⊘ skipped</span>
             </div>
@@ -1268,8 +1294,6 @@ function triggerCameraFeedDemo() {
     toast('Live Metrology Camera Feed: Offline (Demo Mode — Standby)', 'warning');
 }
 
-
-// ── MLOps Retraining Console Workflow ───────────────────────
 let activeAdvisorConfig = null;
 
 async function showLLMAdvisorRetrainWorkflow() {
@@ -1313,13 +1337,17 @@ async function acceptAdvisorRecommendation() {
     
     toast('Starting retraining with Advisor parameters...', 'info');
     
-    const params = activeAdvisorConfig || { epochs: 30, imgsz: 640, batch_size: 16 };
+    const params = activeAdvisorConfig || { epochs: 30, imgsz: 640, batch: 16 };
     try {
         const body = {
             epochs: params.epochs || 30,
-            imgsz: params.imgsz || 640,
-            batch_size: params.batch || params.batch_size || 16
+            imgsz:  params.imgsz  || 640,
+            batch_size: params.batch || params.batch_size || 16,
+            // freeze: null means let the advisor-computed value stay (already baked in)
+            freeze: (params.freeze !== undefined && params.freeze !== null) ? params.freeze : null,
         };
+        // strip null freeze so backend uses LLM default
+        if (body.freeze === null) delete body.freeze;
         await post('/api/retraining/smart-trigger', body);
         toast('YOLO fine-tuning started!', 'success');
     } catch (e) {
@@ -1331,25 +1359,47 @@ async function acceptAdvisorRecommendation() {
 function openCustomizeModal() {
     const modal = document.getElementById('model-modal');
     const title = document.getElementById('model-modal-title');
-    const body = document.getElementById('model-modal-body');
+    const body  = document.getElementById('model-modal-body');
     
-    title.textContent = '⚙️ Customize YOLO Retraining Parameters';
+    title.textContent = '✏️ Edit Training Config Before Fine-tuning';
     
+    // Pre-fill with LLM-recommended values or safe defaults
+    const cfg = activeAdvisorConfig || {};
+    const epochsDefault = cfg.epochs  || 30;
+    const imgszDefault = cfg.imgsz   || 640;
+    const batchDefault  = cfg.batch   || 16;
+    const freezeDefault = (cfg.freeze !== undefined && cfg.freeze !== null) ? cfg.freeze : '';
+    const totalLayers   = 22;  // YOLOv8 modules
+
     body.innerHTML = `
-    <div style="display:flex; flex-direction:column; gap:12px; font-size:14px; color:var(--text-primary);">
+    <div style="display:flex; flex-direction:column; gap:14px; font-size:14px; color:var(--text-primary);">
+        <p style="font-size:12px; color:var(--text-muted); margin:0;">
+            LLM-recommended values are pre-filled. Override any field and click
+            <strong>🚀 Start Retraining</strong> to use your values.
+        </p>
         <div class="input-group">
-            <label style="font-weight:bold; display:block; margin-bottom:4px;">Epochs</label>
-            <input type="number" id="cust-epochs" value="30" min="1" max="300" style="width:100%; padding:8px; border-radius:4px; border:1px solid var(--border); background:var(--bg-secondary); color:var(--text-primary);" />
+            <label style="font-weight:bold; display:block; margin-bottom:4px;">⏱️ Epochs</label>
+            <input type="number" id="cust-epochs" value="${epochsDefault}" min="1" max="300"
+                style="width:100%; padding:8px; border-radius:4px; border:1px solid var(--border); background:var(--bg-secondary); color:var(--text-primary);" />
+            <small style="color:var(--text-muted);">LLM suggested: ${epochsDefault}. More epochs → better accuracy but slower.</small>
         </div>
         <div class="input-group">
-            <label style="font-weight:bold; display:block; margin-bottom:4px;">Image Size (imgsz)</label>
-            <input type="number" id="cust-imgsz" value="640" min="32" max="1280" style="width:100%; padding:8px; border-radius:4px; border:1px solid var(--border); background:var(--bg-secondary); color:var(--text-primary);" />
+            <label style="font-weight:bold; display:block; margin-bottom:4px;">🧊 Freeze Depth (0 – ${totalLayers})</label>
+            <input type="number" id="cust-freeze" value="${freezeDefault}" min="0" max="${totalLayers}" placeholder="blank = LLM auto"
+                style="width:100%; padding:8px; border-radius:4px; border:1px solid var(--border); background:var(--bg-secondary); color:var(--text-primary);" />
+            <small style="color:var(--text-muted);">0 = full fine-tune | ${totalLayers-1} = head-only. LLM suggested: ${freezeDefault !== '' ? freezeDefault : 'auto'}.</small>
         </div>
         <div class="input-group">
-            <label style="font-weight:bold; display:block; margin-bottom:4px;">Batch Size</label>
-            <input type="number" id="cust-batch" value="16" min="1" max="128" style="width:100%; padding:8px; border-radius:4px; border:1px solid var(--border); background:var(--bg-secondary); color:var(--text-primary);" />
+            <label style="font-weight:bold; display:block; margin-bottom:4px;">📐 Image Size (imgsz)</label>
+            <input type="number" id="cust-imgsz" value="640" min="32" max="1280"
+                style="width:100%; padding:8px; border-radius:4px; border:1px solid var(--border); background:var(--bg-secondary); color:var(--text-primary);" />
         </div>
-        <div class="flex gap-sm" style="margin-top:12px;">
+        <div class="input-group">
+            <label style="font-weight:bold; display:block; margin-bottom:4px;">🔢 Batch Size</label>
+            <input type="number" id="cust-batch" value="${batchDefault}" min="1" max="128"
+                style="width:100%; padding:8px; border-radius:4px; border:1px solid var(--border); background:var(--bg-secondary); color:var(--text-primary);" />
+        </div>
+        <div class="flex gap-sm" style="margin-top:4px;">
             <button class="btn btn--primary" onclick="submitCustomRetraining()">🚀 Start Retraining</button>
             <button class="btn btn--outline" onclick="closeModelModal()">Cancel</button>
         </div>
@@ -1362,19 +1412,25 @@ async function submitCustomRetraining() {
     const epochs = parseInt(document.getElementById('cust-epochs').value) || 30;
     const imgsz = parseInt(document.getElementById('cust-imgsz').value) || 640;
     const batch = parseInt(document.getElementById('cust-batch').value) || 16;
+    const freezeInput = document.getElementById('cust-freeze').value.trim();
+    const freeze = freezeInput !== '' ? parseInt(freezeInput) : null;
     
     closeModelModal();
     const card = document.getElementById('train-advisor-card');
     if (card) card.style.display = 'none';
     
-    toast(`Starting custom training (Epochs: ${epochs}, Image Size: ${imgsz}, Batch: ${batch})...`, 'info');
+    const freezeLabel = freeze !== null ? `Freeze Depth: ${freeze}` : 'Freeze: Auto';
+    toast(`Starting custom training (Epochs: ${epochs}, Image Size: ${imgsz}, Batch: ${batch}, ${freezeLabel})...`, 'info');
     
     try {
-        await post('/api/retraining/smart-trigger', {
+        const body = {
             epochs: epochs,
             imgsz: imgsz,
-            batch_size: batch
-        });
+            batch_size: batch,
+            freeze: freeze
+        };
+        if (body.freeze === null) delete body.freeze;
+        await post('/api/retraining/smart-trigger', body);
         toast('Custom YOLO fine-tuning triggered!', 'success');
     } catch (e) {
         toast(`Training failed: ${e.message}`, 'error');
@@ -1424,4 +1480,135 @@ function toggleSelectAllCrops(clusterName, isChecked) {
     checkboxes.forEach(cb => { cb.checked = isChecked; });
     updateBatchUI(clusterName);
 }
+
+// ── Inference Comparison ────────────────────────────────────
+
+let currentInferFile = null;
+
+async function runInferenceCompare(file) {
+    if (!file) return;
+    currentInferFile = file;
+
+    const uploadZone = document.getElementById('infer-upload-zone');
+    const loading = document.getElementById('infer-loading');
+    const results = document.getElementById('infer-results');
+    const confSlider = document.getElementById('infer-conf-slider');
+    const confVal = confSlider ? parseFloat(confSlider.value) : 0.25;
+
+    uploadZone.style.display = 'none';
+    loading.style.display = 'block';
+    results.style.display = 'none';
+
+    try {
+        const form = new FormData();
+        form.append('file', file);
+
+        const resp = await fetch(`/api/inference/compare?conf=${confVal}`, { method: 'POST', body: form });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            throw new Error(err.detail || resp.statusText);
+        }
+        const data = await resp.json();
+
+        // Baseline
+        document.getElementById('infer-baseline-img').src = 'data:image/jpeg;base64,' + data.baseline.image_b64;
+        document.getElementById('infer-baseline-count').textContent = data.baseline.num_detections + ' detections';
+        const blDets = document.getElementById('infer-baseline-dets');
+        blDets.innerHTML = data.baseline.detections.length
+            ? data.baseline.detections.map(d =>
+                `<span class="infer-det-tag">${d.label} <span class="det-conf">${(d.confidence * 100).toFixed(0)}%</span></span>`
+            ).join('')
+            : '<span style="font-size:0.75rem; color:var(--text-muted);">No detections</span>';
+
+        // Finetuned
+        document.getElementById('infer-finetuned-img').src = 'data:image/jpeg;base64,' + data.finetuned.image_b64;
+        document.getElementById('infer-finetuned-count').textContent = data.finetuned.num_detections + ' detections';
+        const ftDets = document.getElementById('infer-finetuned-dets');
+        ftDets.innerHTML = data.finetuned.detections.length
+            ? data.finetuned.detections.map(d =>
+                `<span class="infer-det-tag">${d.label} <span class="det-conf">${(d.confidence * 100).toFixed(0)}%</span></span>`
+            ).join('')
+            : '<span style="font-size:0.75rem; color:var(--text-muted);">No detections</span>';
+
+        loading.style.display = 'none';
+        results.style.display = 'block';
+
+    } catch (e) {
+        loading.style.display = 'none';
+        uploadZone.style.display = 'flex';
+        toast('Inference failed: ' + e.message, 'error');
+    }
+}
+
+function resetInferenceCompare() {
+    currentInferFile = null;
+    document.getElementById('infer-upload-zone').style.display = 'flex';
+    document.getElementById('infer-results').style.display = 'none';
+    document.getElementById('infer-loading').style.display = 'none';
+    document.getElementById('infer-file-input').value = '';
+    document.getElementById('infer-sample-select').value = '';
+}
+
+async function loadSelectedSample() {
+    const selector = document.getElementById('infer-sample-select');
+    const filename = selector.value;
+    if (!filename) {
+        toast('Please choose a sample image first', 'info');
+        return;
+    }
+
+    try {
+        toast(`Fetching sample image '${filename}'...`, 'info');
+        const resp = await fetch(`/api/input-images/${filename}`);
+        if (!resp.ok) throw new Error('Failed to download sample image');
+        const blob = await resp.blob();
+        const file = new File([blob], filename, { type: 'image/jpeg' });
+        runInferenceCompare(file);
+    } catch (e) {
+        toast('Failed to load sample: ' + e.message, 'error');
+    }
+}
+
+// Drag-and-drop & slider listener
+document.addEventListener('DOMContentLoaded', async () => {
+    const zone = document.getElementById('infer-upload-zone');
+    if (zone) {
+        zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
+        zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+        zone.addEventListener('drop', e => {
+            e.preventDefault();
+            zone.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length > 0 && files[0].type.startsWith('image/')) {
+                runInferenceCompare(files[0]);
+            }
+        });
+    }
+
+    // Auto-update on slider release
+    const slider = document.getElementById('infer-conf-slider');
+    if (slider) {
+        slider.addEventListener('change', () => {
+            if (currentInferFile) {
+                runInferenceCompare(currentInferFile);
+            }
+        });
+    }
+
+    // Populate samples selector
+    try {
+        const samples = await get('/api/input-images');
+        const selector = document.getElementById('infer-sample-select');
+        if (selector && samples && samples.length > 0) {
+            samples.forEach(name => {
+                const opt = document.createElement('option');
+                opt.value = name;
+                opt.textContent = name;
+                selector.appendChild(opt);
+            });
+        }
+    } catch (e) {
+        console.error('Failed to load sample list:', e);
+    }
+});
 

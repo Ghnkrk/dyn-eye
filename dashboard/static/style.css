@@ -1435,3 +1435,164 @@ input:checked + .toggle-slider:before { transform: translateX(16px); }
     background: var(--text-muted);
 }
 
+/* ── Cluster Metrics & Cohesion Styles ── */
+.cluster-global-metrics {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.metric-pill {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    padding: 4px 10px;
+    font-size: 0.78rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+    transition: border-color var(--ease), transform var(--ease);
+    cursor: help;
+}
+
+.metric-pill:hover {
+    border-color: var(--accent);
+    transform: translateY(-1px);
+}
+
+.metric-pill-label {
+    color: var(--text-muted);
+    font-weight: 500;
+}
+
+.metric-pill-value {
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-weight: 700;
+}
+
+.cluster-cohesion-badge {
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--accent);
+}
+
+/* ── Inference Comparison ── */
+.infer-upload-zone {
+    border: 2px dashed var(--border-medium);
+    border-radius: var(--radius-md);
+    padding: 28px 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    cursor: pointer;
+    transition: all 0.25s ease;
+    background: var(--bg-inset);
+}
+.infer-upload-zone:hover,
+.infer-upload-zone.dragover {
+    border-color: var(--accent);
+    background: rgba(16, 185, 129, 0.04);
+    box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.08);
+}
+
+.infer-result-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    transition: border-color var(--ease), box-shadow var(--ease);
+}
+.infer-result-card:hover {
+    border-color: var(--border-medium);
+    box-shadow: var(--shadow-md);
+}
+
+.infer-result-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border-light);
+    background: var(--bg-elevated);
+}
+
+.infer-model-badge {
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 3px 10px;
+    border-radius: 999px;
+}
+.infer-model-badge--baseline {
+    background: rgba(59, 130, 246, 0.12);
+    color: #3b82f6;
+    border: 1px solid rgba(59, 130, 246, 0.3);
+}
+.infer-model-badge--finetuned {
+    background: rgba(16, 185, 129, 0.12);
+    color: #10b981;
+    border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.infer-det-count {
+    font-size: 0.75rem;
+    font-family: var(--font-mono);
+    font-weight: 600;
+    color: var(--text-muted);
+}
+
+.infer-image-wrap {
+    padding: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-inset);
+    min-height: 200px;
+}
+.infer-image-wrap img {
+    max-width: 100%;
+    max-height: 420px;
+    border-radius: var(--radius-sm);
+    object-fit: contain;
+}
+
+.infer-det-list {
+    padding: 8px 14px 12px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    max-height: 120px;
+    overflow-y: auto;
+}
+
+.infer-det-tag {
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-light);
+    color: var(--text-secondary);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+.infer-det-tag .det-conf {
+    font-family: var(--font-mono);
+    font-weight: 700;
+    color: var(--accent);
+}

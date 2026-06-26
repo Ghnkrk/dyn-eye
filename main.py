@@ -60,6 +60,7 @@ Commands:
             host=cfg.DASHBOARD_HOST,
             port=port,
             reload=True,
+            reload_dirs=["dashboard", "src"],
         )
 
     elif args.command == "discover":

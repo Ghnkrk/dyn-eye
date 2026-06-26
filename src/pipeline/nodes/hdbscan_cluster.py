@@ -88,136 +88,96 @@ def _save_tuning_cache(cache: dict) -> None:
 
 
 def _dbcv_grid_search(
-    features: np.ndarray,
+    features_projected: np.ndarray,
+    features_norm: np.ndarray,
     n_samples: int,
 ) -> tuple[int, int, float]:
     """
-    Grid search over (min_cluster_size, min_samples) scored by DBCV.
-    Allows dynamic scaling of candidates up to half the sample size to prevent over-segmentation.
+    Grid-search over (min_cluster_size, min_samples) to find parameters that
+    produce the best-quality clustering, scored by silhouette coefficient.
+
+    Scales automatically to dataset size so it works for both small datasets
+    (20–50 crops) and large ones (200–1000+ crops with 4+ classes).
     """
-    cache_path = cfg.CLUSTER_TUNING_CACHE_PATH
-    
-    # Invalidate cache if it contains old hardcoded or bad values
-    cache = {}
-    if cache_path.exists():
-        try:
-            cache = json.loads(cache_path.read_text(encoding="utf-8"))
-            # If the cache has invalid or old entries, clear it to recalculate with new candidates
-            if any(v.get("dbcv_score") == -np.inf or "min_cluster_size" not in v for v in cache.values()):
-                cache = {}
-                log.info("Old/invalid tuning cache cleared.")
-        except Exception:
-            pass
+    from sklearn.metrics import silhouette_score
 
-    # Cache key: batch size bucket (±20%)
-    bucket = round(n_samples / 10) * 10
-    cache_key = str(bucket)
-    if cache_key in cache:
-        cached = cache[cache_key]
-        log.info(
-            f"Tuning cache hit for batch ~{bucket}: "
-            f"mcs={cached['min_cluster_size']}, ms={cached['min_samples']}, "
-            f"dbcv={cached['dbcv_score']:.4f}"
-        )
-        return cached["min_cluster_size"], cached["min_samples"], cached["dbcv_score"]
+    # ── Candidate grid scaled to dataset size ─────────────────
+    # min_cluster_size: want clusters of at least 3 items but not so large
+    # that it forces everything into one cluster.
+    # Upper bound: n_samples // expected_max_clusters (assume ≤ 10 classes)
+    max_mcs = max(4, n_samples // 3)          # never more than n/3
+    min_mcs = max(2, n_samples // 30)         # at least 2, scale with size
 
-    try:
-        from hdbscan.validity import validity_index
-    except ImportError:
-        log.warning("hdbscan.validity not available — using config defaults")
-        return cfg.HDBSCAN_MIN_CLUSTER_SIZE, cfg.HDBSCAN_MIN_SAMPLES, -1.0
-
-    base = cfg.HDBSCAN_MIN_CLUSTER_SIZE
-    
-    # Candidates: from small (tight clusters) up to n_samples//5 (broad clusters).
-    # Capped at //5 to avoid forcing all crops into 1-2 giant, low-cohesion blobs.
+    # Build a modest candidate list (keep it fast)
     mcs_candidates = sorted(set([
-        max(2, base),
-        max(2, base + 2),
-        max(2, int(np.sqrt(n_samples))),
-        max(2, n_samples // 10),
-        max(2, n_samples // 8),
-        max(2, n_samples // 6),
-        max(2, n_samples // 5),
+        min_mcs,
+        max(2, n_samples // 20),
+        max(2, n_samples // 15),
+        max(3, n_samples // 10),
+        max(4, n_samples // 8),
+        max(5, n_samples // 6),
+        min(max_mcs, max(6, n_samples // 5)),
     ]))
-    mcs_candidates = [m for m in mcs_candidates if 1 < m < n_samples]
-    
-    ms_candidates = [1, 2, 3]
+    ms_candidates = [1, 2, max(1, n_samples // 50)]
 
-    best_score = -np.inf
-    best_mcs, best_ms = base, cfg.HDBSCAN_MIN_SAMPLES
+    best_mcs = mcs_candidates[len(mcs_candidates) // 2]  # middle default
+    best_ms = 1
+    best_score = -2.0  # below -1 so first valid result wins
+    best_n_clusters = 0
 
     for mcs in mcs_candidates:
         for ms in ms_candidates:
             if ms > mcs:
                 continue
             try:
-                clusterer = hdbscan.HDBSCAN(
+                cl = hdbscan.HDBSCAN(
                     min_cluster_size=mcs,
                     min_samples=ms,
                     metric=cfg.HDBSCAN_METRIC,
-                    core_dist_n_jobs=1,
                     cluster_selection_method=cfg.HDBSCAN_CLUSTER_SELECTION_METHOD,
+                    core_dist_n_jobs=1,
                     allow_single_cluster=True,
                 )
-                labels = clusterer.fit_predict(features)
-                n_clusters = len(set(labels) - {-1})
-                if n_clusters < 1:
-                    continue
-                score = validity_index(features, labels)
-                # We want a valid finite DBCV score
-                if np.isnan(score) or np.isinf(score):
-                    continue
-                if score > best_score:
+                lbls = cl.fit_predict(features_projected)
+                unique = set(lbls) - {-1}
+                n_clusters = len(unique)
+
+                if n_clusters < 2:
+                    # Prefer at least 2 clusters; treat single-cluster as score=-0.5
+                    score = -0.5
+                else:
+                    # Use silhouette on L2-normalised high-dim features (more reliable)
+                    noise_mask = lbls != -1
+                    if noise_mask.sum() >= 2 and len(set(lbls[noise_mask])) >= 2:
+                        score = silhouette_score(
+                            features_norm[noise_mask], lbls[noise_mask],
+                            metric="cosine"
+                        )
+                    else:
+                        score = -0.5
+
+                # Prefer more clusters (break ties toward finer resolution)
+                # but only when silhouette is close
+                if score > best_score + 0.01 or (
+                    abs(score - best_score) <= 0.01 and n_clusters > best_n_clusters
+                ):
                     best_score = score
                     best_mcs = mcs
                     best_ms = ms
-            except Exception:
-                continue
+                    best_n_clusters = n_clusters
 
-    # Fallback: DBCV returned NaN/inf for all candidates (common with PCA reduction).
-    # Prefer smaller mcs — produces tighter, more cohesive clusters.
-    if best_score == -np.inf:
-        log.warning("Grid search yielded no finite DBCV scores — using smallest-mcs fallback")
-        for mcs in mcs_candidates:  # ascending order → smallest first
-            try:
-                clusterer = hdbscan.HDBSCAN(
-                    min_cluster_size=mcs,
-                    min_samples=min(2, mcs),
-                    metric=cfg.HDBSCAN_METRIC,
-                    core_dist_n_jobs=1,
-                    cluster_selection_method=cfg.HDBSCAN_CLUSTER_SELECTION_METHOD,
-                    allow_single_cluster=True,
-                )
-                labels = clusterer.fit_predict(features)
-                n_clusters = len(set(labels) - {-1})
-                if 2 <= n_clusters <= max(8, n_samples // 5):
-                    best_mcs = mcs
-                    best_ms = min(2, mcs)
-                    best_score = 0.0
-                    log.info(f"Fallback selected mcs={mcs} → {n_clusters} clusters.")
-                    break
             except Exception:
                 continue
 
     log.info(
-        f"DBCV grid search complete: best mcs={best_mcs}, ms={best_ms}, "
-        f"score={best_score:.4f} (searched {len(mcs_candidates)*len(ms_candidates)} combos)"
+        f"Grid search result: mcs={best_mcs}, ms={best_ms}, "
+        f"n_clusters={best_n_clusters}, silhouette={best_score:.4f} "
+        f"(n_samples={n_samples})"
     )
+    return best_mcs, best_ms, max(best_score, -1.0)
 
-    # Cache the result
-    cache[cache_key] = {
-        "min_cluster_size": best_mcs,
-        "min_samples": best_ms,
-        "dbcv_score": float(best_score),
-        "n_samples": n_samples,
-    }
-    try:
-        _save_tuning_cache(cache)
-    except Exception as e:
-        log.warning(f"Failed to save tuning cache: {e}")
 
-    return best_mcs, best_ms, float(best_score)
+
 
 
 # ── Dimensionality reduction ────────────────────────────────
@@ -382,7 +342,7 @@ def hdbscan_cluster_node(state: dict) -> dict:
     else:
         try:
             best_mcs, best_ms, dbcv_score = _dbcv_grid_search(
-                novel_features_projected, n_samples
+                novel_features_projected, novel_features_norm, n_samples
             )
             tuned_params = {
                 "min_cluster_size": best_mcs,

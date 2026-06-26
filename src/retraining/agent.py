@@ -49,6 +49,7 @@ class RetrainingState(TypedDict, total=False):
     epochs: int
     imgsz: int
     batch_size: int
+    freeze: int                  # user-supplied override (None = let LLM decide)
 
     # Export
     export_result: dict
@@ -238,8 +239,11 @@ def train_node(state: dict) -> dict:
 
     # User-specified params override LLM
     epochs = state.get("epochs") or llm_cfg.get("epochs", cfg.YOLO_TRAIN_EPOCHS)
-    imgsz = state.get("imgsz") or llm_cfg.get("imgsz", cfg.YOLO_TRAIN_IMGSZ)
-    batch = state.get("batch_size") or llm_cfg.get("batch", cfg.YOLO_TRAIN_BATCH)
+    imgsz  = state.get("imgsz")  or llm_cfg.get("imgsz",  cfg.YOLO_TRAIN_IMGSZ)
+    batch  = state.get("batch_size") or llm_cfg.get("batch", cfg.YOLO_TRAIN_BATCH)
+    # freeze: user wins → LLM → None (train_yolo will use config default)
+    freeze_user = state.get("freeze")
+    freeze = freeze_user if freeze_user is not None else llm_cfg.get("freeze")
 
     try:
         result = train_yolo(
@@ -255,7 +259,7 @@ def train_node(state: dict) -> dict:
             patience=llm_cfg.get("patience"),
             optimizer=llm_cfg.get("optimizer"),
             cos_lr=llm_cfg.get("cos_lr"),
-            freeze=llm_cfg.get("freeze"),
+            freeze=freeze,   # user override already merged above
             augment=llm_cfg.get("augment"),
             mosaic=llm_cfg.get("mosaic"),
             mixup=llm_cfg.get("mixup"),
@@ -473,15 +477,17 @@ def run_retraining_pipeline(
     epochs: int | None = None,
     imgsz: int | None = None,
     batch_size: int | None = None,
+    freeze: int | None = None,
 ) -> dict:
     """
     Run the complete retraining pipeline.
 
     Args:
         project_id: (legacy, unused)
-        epochs: Training epochs
-        imgsz: Training image size
-        batch_size: Training batch size
+        epochs:     Training epochs override (None = let LLM decide)
+        imgsz:      Training image size override
+        batch_size: Training batch size override
+        freeze:     Backbone freeze depth override (None = let LLM decide)
 
     Returns:
         Final state dict with all step results.
@@ -499,6 +505,8 @@ def run_retraining_pipeline(
         "batch_size": batch_size or cfg.YOLO_TRAIN_BATCH,
         "errors": [],
     }
+    if freeze is not None:
+        initial_state["freeze"] = freeze
 
     log.info(f"═══ Starting retraining pipeline: {run_id} ═══")
 

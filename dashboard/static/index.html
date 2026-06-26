@@ -360,11 +360,107 @@
 
             <!-- Clusters Section -->
             <div class="section">
-                <div class="section-title">Discovered Clusters</div>
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:15px; border-bottom:1px solid var(--border-light); padding-bottom:12px;">
+                    <div class="section-title" style="margin-bottom:0; border:none; padding-bottom:0;">Discovered Clusters</div>
+                    <div class="cluster-global-metrics" id="cluster-global-metrics" style="display:none; align-items:center; gap:12px;">
+                        <div class="metric-pill" title="Intraclass Correlation Coefficient (one-way random effects). Measures how consistent/homogeneous clusters are relative to the overall variation.">
+                            <span class="metric-pill-label">Global ICC:</span>
+                            <span class="metric-pill-value" id="m-global-icc">0.0000</span>
+                        </div>
+                        <div class="metric-pill" title="Mean silhouette score of clusters using cosine similarity on high-dimensional features. Range -1 to +1. High values mean clusters are tight and well-separated.">
+                            <span class="metric-pill-label">Silhouette:</span>
+                            <span class="metric-pill-value" id="m-global-silhouette">0.0000</span>
+                        </div>
+                        <div class="metric-pill" title="Average per-cluster embedding cohesion (mean cosine similarity of cluster members to centroid).">
+                            <span class="metric-pill-label">Mean Cohesion:</span>
+                            <span class="metric-pill-value" id="m-mean-cohesion">0.0000</span>
+                        </div>
+                    </div>
+                </div>
                 <div class="grid grid--3" id="clusters-grid">
                     <div class="empty" style="grid-column:1/-1">
                         <div class="empty-icon">🔬</div>
                         <div>Run the pipeline to discover clusters</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Inference Comparison Section -->
+            <div class="section" id="inference-compare-section">
+                <div class="section-title">⚡ Model Inference Comparison</div>
+                <p style="font-size:0.78rem; color:var(--text-muted); margin:-4px 0 4px;">
+                    Upload a test image to compare the <strong>Baseline</strong> model against the <strong>Finetuned</strong> model side-by-side.
+                    The models differ in their <em>class label mapping</em> — baseline uses original class order, finetuned includes discovered defects.
+                </p>
+                <p style="font-size:0.75rem; background:rgba(59,130,246,0.08); border:1px solid rgba(59,130,246,0.2); border-radius:6px; padding:6px 10px; margin:0 0 10px; color:var(--text-secondary);">
+                    💡 <strong>Best samples to test:</strong> select <code>img_02_425389800_00017.jpg</code> or <code>img_02_425390000_00017.jpg</code> from the dropdown — these contain real <em>waist_folding</em> defects detected at ~13% confidence.
+                    Slider default is 10 %; lower to 5 % to see more boxes.
+                </p>
+
+                <!-- Controls container -->
+                <div class="infer-controls" style="display:flex; flex-wrap:wrap; gap:16px; align-items:center; background:var(--bg-elevated); padding:10px 14px; border-radius:var(--radius-md); border:1px solid var(--border-light); margin-bottom:12px; font-size:0.8rem;">
+                    <!-- Confidence slider -->
+                    <div style="display:flex; align-items:center; gap:8px; flex:1; min-width:200px;">
+                        <span style="font-weight:600; color:var(--text-secondary);">Confidence Threshold:</span>
+                        <input type="range" id="infer-conf-slider" min="0.01" max="1.0" step="0.01" value="0.10" style="flex:1; accent-color:var(--accent);" oninput="document.getElementById('infer-conf-val').textContent = Math.round(this.value * 100) + '%'" />
+                        <span id="infer-conf-val" style="font-family:var(--font-mono); font-weight:700; width:36px; text-align:right; color:var(--accent);">10%</span>
+                    </div>
+
+                    <!-- Quick Sample Selector -->
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <span style="font-weight:600; color:var(--text-secondary);">Try Sample:</span>
+                        <select id="infer-sample-select" style="background:var(--bg-inset); border:1px solid var(--border-light); border-radius:var(--radius-sm); color:var(--text-secondary); padding:4px 8px; outline:none; max-width:180px;">
+                            <option value="">-- Choose Sample --</option>
+                        </select>
+                        <button class="btn btn--outline btn--sm" onclick="loadSelectedSample()" style="padding:4px 10px; font-size:0.75rem;">Load</button>
+                    </div>
+                </div>
+
+                <!-- Upload Zone -->
+                <div class="infer-upload-zone" id="infer-upload-zone"
+                     onclick="document.getElementById('infer-file-input').click()">
+                    <div class="dz-icon-ring">
+                        <svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path d="M12 16V4m0 0L7 9m5-5l5 5"/><path d="M20 16v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2"/></svg>
+                    </div>
+                    <div class="dz-label">Drop a test image here, or click to browse</div>
+                    <div class="dz-formats">JPG · PNG · BMP</div>
+                </div>
+                <input type="file" id="infer-file-input" accept="image/*" style="display:none" onchange="runInferenceCompare(this.files[0])" />
+
+                <!-- Loading spinner -->
+                <div id="infer-loading" style="display:none; text-align:center; padding:32px 0;">
+                    <div class="spinner" style="margin:0 auto 12px;"></div>
+                    <div style="font-size:0.82rem; color:var(--text-muted);">Running both models on the image…</div>
+                </div>
+
+                <!-- Results -->
+                <div id="infer-results" style="display:none;">
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+                        <!-- Baseline -->
+                        <div class="infer-result-card" id="infer-baseline-card">
+                            <div class="infer-result-header">
+                                <span class="infer-model-badge infer-model-badge--baseline">Baseline</span>
+                                <span class="infer-det-count" id="infer-baseline-count">0 detections</span>
+                            </div>
+                            <div class="infer-image-wrap">
+                                <img id="infer-baseline-img" src="" alt="Baseline result" />
+                            </div>
+                            <div class="infer-det-list" id="infer-baseline-dets"></div>
+                        </div>
+                        <!-- Finetuned -->
+                        <div class="infer-result-card" id="infer-finetuned-card">
+                            <div class="infer-result-header">
+                                <span class="infer-model-badge infer-model-badge--finetuned">Finetuned</span>
+                                <span class="infer-det-count" id="infer-finetuned-count">0 detections</span>
+                            </div>
+                            <div class="infer-image-wrap">
+                                <img id="infer-finetuned-img" src="" alt="Finetuned result" />
+                            </div>
+                            <div class="infer-det-list" id="infer-finetuned-dets"></div>
+                        </div>
+                    </div>
+                    <div style="text-align:center; margin-top:12px;">
+                        <button class="btn btn--outline btn--sm" onclick="resetInferenceCompare()">🔄 Test Another Image</button>
                     </div>
                 </div>
             </div>

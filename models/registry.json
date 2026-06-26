@@ -5,8 +5,8 @@
       "version_num": 1,
       "path": "E:\\Protosem2\\models\\versions\\best_v1_initial.pt",
       "original_path": "E:\\Protosem2\\models\\best_initial.pt",
-      "timestamp": "20260613_062026",
-      "created_at": "2026-06-13T06:20:26.391083+00:00",
+      "timestamp": "20260626_061511",
+      "created_at": "2026-06-26T06:15:11.760088+00:00",
       "metrics": {
         "mAP50": 0.95,
         "precision": 0.92,

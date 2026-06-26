@@ -98,7 +98,7 @@ Write a Gemini system prompt that:
 OUTPUT: Return ONLY the Gemini system prompt text. No explanation, no markdown fences."""
 
 
-def _generate_vlm_prompt_via_groq(context: dict) -> str | None:
+def _generate_vlm_prompt_via_groq(context: dict, use_cache: bool = True) -> str | None:
     """
     Call Groq LLM to generate a tailored Gemini VLM detection prompt.
     Returns None on any failure — pipeline always falls back to static prompt.
@@ -109,7 +109,7 @@ def _generate_vlm_prompt_via_groq(context: dict) -> str | None:
 
     ctx_hash = _context_hash(context)
     cache_path = cfg.VLM_PROMPT_CACHE_PATH
-    if cache_path.exists():
+    if use_cache and cache_path.exists():
         try:
             cache = json.loads(cache_path.read_text(encoding="utf-8"))
             if ctx_hash in cache:
@@ -205,7 +205,7 @@ def dataset_context_node(state: dict) -> dict:
     # Generate dynamic detection prompt via Groq
     vlm_prompt = None
     try:
-        vlm_prompt = _generate_vlm_prompt_via_groq(context)
+        vlm_prompt = _generate_vlm_prompt_via_groq(context, use_cache=state.get("use_cache", False))
         if vlm_prompt:
             LogStream.emit(
                 "Dynamic VLM detection prompt generated via Groq",

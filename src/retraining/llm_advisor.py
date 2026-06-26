@@ -66,6 +66,17 @@ def collect_dataset_metadata() -> dict:
     data_yaml = cfg.YOLO_DATASET_DIR / "data.yaml"
     dataset_exists = data_yaml.exists()
 
+    # Detect total YOLO module count from the model file
+    total_model_layers = 22  # Default for YOLOv8n/s/m
+    try:
+        import torch
+        ckpt = torch.load(str(cfg.YOLO_MODEL_PATH), map_location="cpu", weights_only=False)
+        model_obj = ckpt.get("model")
+        if model_obj is not None and hasattr(model_obj, "model"):
+            total_model_layers = len(list(model_obj.model))
+    except Exception:
+        pass
+
     return {
         "classes": classes,
         "class_names": list(classes.keys()),
@@ -77,6 +88,7 @@ def collect_dataset_metadata() -> dict:
         "known_defect_names": known,
         "dataset_prepared": dataset_exists,
         "base_model_exists": cfg.YOLO_MODEL_PATH.exists(),
+        "total_model_layers": total_model_layers,
     }
 
 
@@ -241,6 +253,17 @@ def get_training_recommendation(metadata: dict | None = None) -> dict:
 
 def _build_prompt(metadata: dict) -> str:
     """Build the structured prompt for the LLM."""
+    total_model_layers = metadata.get("total_model_layers", 22)  # YOLOv8 has 22 modules
+    total_crops = metadata.get("total_crops", 0)
+
+    # Heuristic guidance so the LLM has a starting point for freeze:
+    # With few images keep backbone frozen (high freeze), with many unfreeze more.
+    # Rule of thumb: freeze = max(0, total_layers - max(1, total_crops // 15))
+    # E.g. 30 crops → freeze = max(0, 22 - 2) = 20 → only head trains
+    #      150 crops → freeze = max(0, 22 - 10) = 12
+    #      500+ crops → freeze = 0 (full fine-tune)
+    suggested_freeze = max(0, total_model_layers - max(1, min(total_model_layers, total_crops // 15)))
+
     return f"""You are an expert machine learning engineer specializing in YOLO object detection fine-tuning for industrial defect inspection.
 
 **Dataset Metadata:**
@@ -253,6 +276,8 @@ def _build_prompt(metadata: dict) -> str:
 - Average crops per class: {metadata['avg_crops_per_class']}
 - Base YOLO model exists: {metadata['base_model_exists']}
 - Known defect classes already in system: {metadata['known_defect_names']}
+- Total YOLO backbone+neck modules: {total_model_layers} (backbone layers 0–{total_model_layers-3}, neck+head layers {total_model_layers-2}–{total_model_layers-1})
+- Suggested freeze depth (heuristic): {suggested_freeze} layers (freeze 0 = full fine-tune; freeze {total_model_layers-1} = head-only)
 
 **Task:**
 Analyze the dataset and provide training recommendations as JSON:
@@ -265,7 +290,12 @@ Analyze the dataset and provide training recommendations as JSON:
 2. `reason` (str): Brief explanation of your decision.
 
 3. `config` (object): YOLO training hyperparameters optimized for this dataset:
-   - `epochs` (int): Training epochs. ALWAYS set this to exactly 1 epoch for rapid demo purposes.
+   - `epochs` (int): Training epochs. Scale with dataset size:
+     * <50 crops total → 10–20 epochs
+     * 50–200 crops → 20–50 epochs
+     * 200–500 crops → 30–80 epochs
+     * >500 crops → 50–150 epochs
+     Use early stopping (patience) to avoid overfit.
    - `batch` (int): Batch size (smaller for small datasets, typically 8 or 16)
    - `imgsz` (int): Image size (640 standard)
    - `lr0` (float): Initial learning rate
@@ -273,10 +303,15 @@ Analyze the dataset and provide training recommendations as JSON:
    - `momentum` (float): SGD momentum
    - `weight_decay` (float): Weight decay
    - `warmup_epochs` (float): Warmup epochs
-   - `patience` (int): Early stopping patience
+   - `patience` (int): Early stopping patience (set to 10–30)
    - `optimizer` (str): "SGD", "Adam", or "AdamW"
    - `cos_lr` (bool): Use cosine learning rate scheduler
-   - `freeze` (int or null): Number of backbone layers to freeze (helps with small datasets)
+   - `freeze` (int or null): Number of YOLO backbone modules to freeze (0–{total_model_layers}).
+     IMPORTANT: Use the heuristic above as a starting point ({suggested_freeze}) and adjust:
+     * If total_crops < 30: freeze {total_model_layers-1} or {total_model_layers-2} (train only the detection head)
+     * If total_crops < 100: freeze ~{suggested_freeze} (freeze most backbone, fine-tune neck+head)
+     * If total_crops > 200: freeze 0–5 (allow most layers to adapt)
+     Setting freeze too high (e.g. 10 for a large dataset) wastes training potential.
    - `augment` (bool): Enable augmentation
    - `mosaic` (float 0-1): Mosaic augmentation probability
    - `mixup` (float 0-1): Mixup augmentation probability
@@ -332,6 +367,14 @@ def _validate_recommendation(rec: dict, metadata: dict) -> dict:
     if "config" in rec and isinstance(rec["config"], dict):
         result["config"] = {**defaults["config"], **rec["config"]}
 
+    # ── Enforce smart freeze: if freeze is still the generic default (10)
+    # and we have enough data, compute a better value from dataset size
+    if result["config"].get("freeze") == 10:
+        total = metadata.get("total_crops", 0)
+        total_layers = metadata.get("total_model_layers", 22)
+        smart_freeze = max(0, total_layers - max(1, min(total_layers, total // 15)))
+        result["config"]["freeze"] = smart_freeze
+
     return result
 
 
@@ -358,15 +401,27 @@ def _heuristic_fallback(metadata: dict) -> dict:
         )
 
     # Scale parameters based on dataset size
-    if total < 100:
-        epochs, batch, freeze, patience = 1, 8, 10, 10
+    total_layers = 22  # YOLOv8 backbone+neck modules
+    if total < 50:
+        epochs = max(10, total // 2)         # e.g. 30 crops → 15 epochs
+        batch, patience = 8, 15
         lr0, mosaic, mixup = 0.005, 1.0, 0.2
+        freeze = max(0, total_layers - max(1, total // 15))  # e.g. 30 crops → freeze=20
+    elif total < 200:
+        epochs = max(20, total // 4)         # e.g. 80 crops → 20 epochs
+        batch, patience = 16, 15
+        lr0, mosaic, mixup = 0.008, 1.0, 0.15
+        freeze = max(0, total_layers - max(2, total // 15))  # e.g. 120 crops → freeze=14
     elif total < 500:
-        epochs, batch, freeze, patience = 1, 16, 5, 15
+        epochs = max(30, total // 6)         # e.g. 300 crops → 50 epochs
+        batch, patience = 16, 20
         lr0, mosaic, mixup = 0.01, 1.0, 0.1
+        freeze = max(0, total_layers - max(4, total // 15))  # e.g. 300 crops → freeze=2
     else:
-        epochs, batch, freeze, patience = 1, 16, None, 20
+        epochs = min(150, max(50, total // 8))
+        batch, patience = 32, 25
         lr0, mosaic, mixup = 0.01, 1.0, 0.05
+        freeze = 0  # Full fine-tune for large datasets
 
     return {
         "should_train": should_train,

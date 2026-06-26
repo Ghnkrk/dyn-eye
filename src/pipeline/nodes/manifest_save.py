@@ -25,6 +25,9 @@ def _save_cluster_manifest(
     cluster_folders: dict[int, str],
     crop_metadata: list[dict],
     vlm_system_prompt: str | None = None,
+    cohesions: dict[str, float] = None,
+    global_icc: float = 0.0,
+    global_silhouette: float = 0.0,
 ) -> Path:
     """
     Save a manifest JSON:
@@ -38,6 +41,8 @@ def _save_cluster_manifest(
     manifest: dict = {
         "run_id": run_id,
         "vlm_system_prompt": vlm_system_prompt or STATIC_PROMPT,
+        "global_icc": round(global_icc, 4),
+        "global_silhouette": round(global_silhouette, 4),
         "clusters": {}
     }
 
@@ -60,10 +65,12 @@ def _save_cluster_manifest(
             continue
 
         images = list_images(folder)
+        cohesion_val = cohesions.get(folder.name) if cohesions else None
         cluster_entry = {
             "cluster_id": int(cluster_id),
             "crop_count": len(images),
             "defect_name": None,
+            "cohesion": cohesion_val,
             "crops": [],
         }
 
@@ -84,6 +91,17 @@ def _save_cluster_manifest(
         manifest["clusters"][folder.name] = cluster_entry
 
     manifest_path = cfg.CLUSTERS_DIR / "cluster_manifest.json"
+    from src.utils import load_json
+    # Preserve existing cluster defect_name if it exists in the old manifest
+    if manifest_path.exists():
+        try:
+            old_manifest = load_json(manifest_path)
+            for cname, entry in old_manifest.get("clusters", {}).items():
+                if cname in manifest["clusters"] and entry.get("defect_name"):
+                    manifest["clusters"][cname]["defect_name"] = entry["defect_name"]
+        except Exception:
+            pass
+
     save_json(manifest, manifest_path)
     log.info(f"Cluster manifest saved to {manifest_path}")
     return manifest_path
@@ -91,19 +109,7 @@ def _save_cluster_manifest(
 
 def manifest_save_node(state: dict) -> dict:
     """
-    LangGraph node: save cluster manifest, run ICC annotation, log VLM metrics.
-
-    Reads:
-        state["cluster_folders"]
-        state["crop_metadata"]
-        state["run_id"]
-        state["vlm_system_prompt"]   (optional — dynamic prompt from dataset_context)
-        state["dbcv_score"]
-        state["registry_hits"]
-        state["registry_total"]
-
-    Writes:
-        state["vlm_cluster_results"]
+    LangGraph node: save cluster manifest, run ICC annotation, log VLM/run metrics.
     """
     cluster_folders = state.get("cluster_folders", {})
     crop_metadata   = state.get("crop_metadata", [])
@@ -114,10 +120,127 @@ def manifest_save_node(state: dict) -> dict:
         log.warning("No clusters to save manifest for")
         return {"vlm_cluster_results": []}
 
-    # ── 1. Save cluster manifest ─────────────────────────────
-    _save_cluster_manifest(run_id, cluster_folders, crop_metadata, vlm_system_prompt)
+    # ── 1. Calculate cohesion & global metrics from embeddings ──
+    from src.utils import LogStream
+    import numpy as np
+    from sklearn.metrics import silhouette_score
 
-    # ── 2. Save crop-to-source mapping ───────────────────────
+    cluster_results: list[dict] = []
+    cohesions: dict[str, float] = {}
+    global_icc = 0.0
+    global_silhouette = 0.0
+
+    try:
+        feature_vectors = state.get("feature_vectors")   # (N, 384)
+        cluster_labels  = state.get("cluster_labels")    # (N,) int, -1 = noise
+        novel_indices   = state.get("novel_indices", [])
+
+        if feature_vectors is not None and cluster_labels is not None:
+            feat = np.asarray(feature_vectors)
+            labels = np.asarray(cluster_labels)
+
+            if novel_indices:
+                feat = feat[novel_indices]
+
+            # L2-normalise so cosine similarity = dot product
+            norms = np.linalg.norm(feat, axis=1, keepdims=True)
+            norms = np.where(norms == 0, 1.0, norms)
+            feat_norm = feat / norms
+
+            valid_ids = sorted(set(int(l) for l in labels) - {-1})
+
+            if valid_ids:
+                msg_start = f"Computing statistical ICC for {len(valid_ids)} clusters using embedding cohesion"
+                log.info(msg_start)
+                LogStream.emit(msg_start, level="info", source="manifest_save")
+
+                # Per-cluster cohesion score
+                group_vecs: list[np.ndarray] = []
+                for cid in valid_ids:
+                    mask = labels == cid
+                    g = feat_norm[mask]
+                    group_vecs.append(g)
+
+                    if len(g) == 0:
+                        cohesion = 0.0
+                    elif len(g) == 1:
+                        cohesion = 1.0
+                    else:
+                        centroid = g.mean(axis=0)
+                        centroid /= max(np.linalg.norm(centroid), 1e-9)
+                        cohesion = float(np.clip(g @ centroid, 0, 1).mean())
+
+                    cohesions[f"cluster_{cid:03d}"] = round(cohesion, 4)
+                    cluster_results.append({
+                        "cluster_id": cid,
+                        "label": f"cluster_{cid:03d}",
+                        "icc": round(cohesion, 4),
+                        "confidence": round(cohesion, 4),
+                        "n_samples": int(mask.sum()),
+                        "labels_seen": [],
+                    })
+                    log.info(f"  Cluster {cid}: cohesion={cohesion:.4f}  (n={mask.sum()})")
+
+                # Global ANOVA ICC
+                all_vecs = feat_norm
+                grand_mean = all_vecs.mean(axis=0)
+                K = len(valid_ids)
+                N = len(all_vecs)
+
+                ss_between = sum(
+                    len(g) * float(np.sum((g.mean(axis=0) - grand_mean) ** 2))
+                    for g in group_vecs
+                )
+                ss_within = sum(
+                    float(np.sum((g - g.mean(axis=0)) ** 2))
+                    for g in group_vecs
+                )
+                df_b = K - 1
+                df_w = N - K
+
+                if df_b > 0 and df_w > 0 and ss_within > 0:
+                    ms_b = ss_between / df_b
+                    ms_w = ss_within / df_w
+                    k0 = (N - sum(len(g) ** 2 for g in group_vecs) / N) / df_b
+                    denom = ms_b + max(k0 - 1, 0) * ms_w
+                    global_icc = float(np.clip((ms_b - ms_w) / denom if denom > 0 else 0.0, 0.0, 1.0))
+                else:
+                    global_icc = 1.0 if K == 1 else 0.0
+
+                # Global Silhouette score
+                mask_non_noise = labels != -1
+                if mask_non_noise.sum() >= 4 and len(set(labels[mask_non_noise])) >= 2:
+                    global_silhouette = float(silhouette_score(feat_norm[mask_non_noise], labels[mask_non_noise], metric="cosine"))
+                else:
+                    global_silhouette = 0.0
+
+                avg_cohesion = sum(r["icc"] for r in cluster_results) / len(cluster_results)
+                msg_end = (
+                    f"ICC complete — global ICC={global_icc:.4f}, global Silhouette={global_silhouette:.4f}, "
+                    f"mean per-cluster cohesion={avg_cohesion:.4f}"
+                )
+                log.info(msg_end)
+                LogStream.emit(msg_end, level="info", source="manifest_save")
+
+                # Attach global score to state so vlm_metrics can log it
+                state["global_icc"] = global_icc
+                state["global_silhouette"] = global_silhouette
+
+    except Exception as e:
+        log.warning(f"Statistical ICC failed (non-fatal): {e}")
+
+    # ── 2. Save cluster manifest with metrics ────────────────
+    _save_cluster_manifest(
+        run_id=run_id,
+        cluster_folders=cluster_folders,
+        crop_metadata=crop_metadata,
+        vlm_system_prompt=vlm_system_prompt,
+        cohesions=cohesions,
+        global_icc=global_icc,
+        global_silhouette=global_silhouette,
+    )
+
+    # ── 3. Save crop-to-source mapping ───────────────────────
     crop_mapping: dict = {}
     for meta in crop_metadata:
         crop_name = Path(meta.get("crop_path", "")).stem
@@ -137,121 +260,7 @@ def manifest_save_node(state: dict) -> dict:
     log.info(f"Crop-to-source mapping saved to {cfg.DATA_DIR / 'crop_to_source.json'}")
     log.info(f"Manifest saved for {len(cluster_folders)} clusters. Ready for review in dashboard.")
 
-    # ── 3. Statistical ICC from feature embeddings ────────────
-    # Computes the real Intraclass Correlation Coefficient (one-way random
-    # effects) using the DINOv2 feature vectors already in the pipeline state.
-    # No VLM API calls required — pure NumPy, deterministic, sub-millisecond.
-    #
-    # Per-cluster score: mean cosine similarity of each crop to its centroid
-    #   → 1.0 = all crops in cluster are identical in feature space (perfect cohesion)
-    #   → 0.0 = crops are scattered / orthogonal (no cohesion)
-    #
-    # Global ICC: one-way ANOVA decomposition across all clusters
-    #   ICC = (MS_between - MS_within) / (MS_between + (k0-1) * MS_within)
-    from src.utils import LogStream
-
-    cluster_results: list[dict] = []
-
-    try:
-        import numpy as np
-
-        feature_vectors = state.get("feature_vectors")   # (N, 384)
-        cluster_labels  = state.get("cluster_labels")    # (N,) int, -1 = noise
-        novel_indices   = state.get("novel_indices", []) # indices into feature_vectors
-
-        if feature_vectors is None or cluster_labels is None:
-            raise ValueError("feature_vectors or cluster_labels not in state")
-
-        feat = np.asarray(feature_vectors)
-        labels = np.asarray(cluster_labels)
-
-        # Restrict to novel crops only (same subset used for clustering)
-        if novel_indices:
-            feat   = feat[novel_indices]
-            labels = labels  # cluster_labels already covers only novel crops
-
-        # L2-normalise so cosine similarity = dot product
-        norms = np.linalg.norm(feat, axis=1, keepdims=True)
-        norms = np.where(norms == 0, 1.0, norms)
-        feat_norm = feat / norms
-
-        valid_ids = sorted(set(int(l) for l in labels) - {-1})
-
-        if not valid_ids:
-            raise ValueError("No valid (non-noise) clusters found")
-
-        msg_start = f"Computing statistical ICC for {len(valid_ids)} clusters using embedding cohesion"
-        log.info(msg_start)
-        LogStream.emit(msg_start, level="info", source="manifest_save")
-
-        # ── Per-cluster cohesion score ──────────────────────────
-        group_vecs: list[np.ndarray] = []
-        for cid in valid_ids:
-            mask = labels == cid
-            g = feat_norm[mask]                    # (n_i, 384)
-            group_vecs.append(g)
-
-            if len(g) == 0:
-                cohesion = 0.0
-            elif len(g) == 1:
-                cohesion = 1.0                     # trivially cohesive
-            else:
-                centroid = g.mean(axis=0)
-                centroid /= max(np.linalg.norm(centroid), 1e-9)
-                cohesion = float(np.clip(g @ centroid, 0, 1).mean())
-
-            cluster_results.append({
-                "cluster_id": cid,
-                "label": f"cluster_{cid:03d}",
-                "icc": round(cohesion, 4),
-                "confidence": round(cohesion, 4),
-                "n_samples": int(mask.sum()),
-                "labels_seen": [],
-            })
-            log.info(f"  Cluster {cid}: cohesion={cohesion:.4f}  (n={mask.sum()})")
-
-        # ── Global one-way ANOVA ICC ────────────────────────────
-        all_vecs = feat_norm                       # (N, D)
-        grand_mean = all_vecs.mean(axis=0)
-        K = len(valid_ids)
-        N = len(all_vecs)
-
-        ss_between = sum(
-            len(g) * float(np.sum((g.mean(axis=0) - grand_mean) ** 2))
-            for g in group_vecs
-        )
-        ss_within = sum(
-            float(np.sum((g - g.mean(axis=0)) ** 2))
-            for g in group_vecs
-        )
-        df_b = K - 1
-        df_w = N - K
-
-        if df_b > 0 and df_w > 0 and ss_within > 0:
-            ms_b = ss_between / df_b
-            ms_w = ss_within / df_w
-            # Unequal-n correction factor k0
-            k0 = (N - sum(len(g) ** 2 for g in group_vecs) / N) / df_b
-            denom = ms_b + max(k0 - 1, 0) * ms_w
-            global_icc = float(np.clip((ms_b - ms_w) / denom if denom > 0 else 0.0, 0.0, 1.0))
-        else:
-            global_icc = 1.0 if K == 1 else 0.0
-
-        avg_cohesion = sum(r["icc"] for r in cluster_results) / len(cluster_results)
-        msg_end = (
-            f"ICC complete — global ICC={global_icc:.4f}, "
-            f"mean per-cluster cohesion={avg_cohesion:.4f}"
-        )
-        log.info(msg_end)
-        LogStream.emit(msg_end, level="info", source="manifest_save")
-
-        # Attach global score to state so vlm_metrics can log it
-        state["global_icc"] = global_icc
-
-    except Exception as e:
-        log.warning(f"Statistical ICC failed (non-fatal): {e}")
-
-    # ── 4. Log VLM metrics ───────────────────────────────────
+    # ── 4. Log VLM/run metrics ───────────────────────────────
     if cluster_results:
         try:
             from src.utils.vlm_metrics import log_run_metrics

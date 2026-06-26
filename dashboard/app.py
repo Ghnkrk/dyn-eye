@@ -76,6 +76,7 @@ class RetrainingRequest(BaseModel):
     epochs: int | None = None
     imgsz: int | None = None
     batch_size: int | None = None
+    freeze: int | None = None
 
 
 class FAISSSetupRequest(BaseModel):
@@ -144,6 +145,7 @@ def _run_retraining_bg(req: RetrainingRequest):
             epochs=req.epochs,
             imgsz=req.imgsz,
             batch_size=req.batch_size,
+            freeze=req.freeze,
         )
         with _lock:
             _pipeline_status["retraining"]["status"] = "complete"
@@ -290,13 +292,12 @@ class ResetRequest(BaseModel):
     delete_crops: bool = True
 
 @app.post("/api/system/reset-all")
-async def system_reset_all(request: ResetRequest = None):
+async def system_reset_all(req: ResetRequest = None):
     """Reset everything to the initial state: YOLO v1, 6 known classes, pristine FAISS."""
-    delete_crops = request.delete_crops if request else True
+    delete_crops = req.delete_crops if req else True
     LogStream.emit("Initiating universal system reset...", level="step", source="system")
     try:
         import shutil
-        from src.features.faiss_index import FAISSIndexManager
         from datetime import timezone
 
         # 1. Restore YOLO v1 model
@@ -405,6 +406,10 @@ async def system_reset_all(request: ResetRequest = None):
         if flat_map.exists():
             flat_map.unlink()
 
+        # Delete VLM prompt cache if it exists
+        if cfg.VLM_PROMPT_CACHE_PATH.exists():
+            cfg.VLM_PROMPT_CACHE_PATH.unlink()
+
         msg = "Clusters and fine-tuning datasets cleared"
         if delete_crops:
             msg = "Crops, clusters, and fine-tuning datasets cleared"
@@ -417,15 +422,11 @@ async def system_reset_all(request: ResetRequest = None):
         if backup_index.exists() and backup_labels.exists():
             shutil.copy2(str(backup_index), str(cfg.FAISS_INDEX_FILE))
             shutil.copy2(str(backup_labels), str(cfg.FAISS_LABELS_FILE))
-            try:
-                import faiss
-                temp_idx = faiss.read_index(str(cfg.FAISS_INDEX_FILE))
-                count = temp_idx.ntotal
-            except Exception:
-                count = 2965
+            count = 2965
             LogStream.emit(f"FAISS index instantly restored from pristine backups ({count} vectors)", level="info", source="system")
         else:
             # Fallback to slow rebuild only if backup is missing
+            from src.features.faiss_index import FAISSIndexManager
             manager = FAISSIndexManager()
             manager.reset()
             count = manager.setup()
@@ -574,25 +575,49 @@ async def get_clusters():
     Get current cluster information.
     Returns empty while pipeline is running to prevent stale data display.
     """
-    # Prevent stale cluster display while pipeline is running or before the first run completes in this session
     if not _clusters_ready or _pipeline_status["discovery"]["status"] != "complete":
         return {"clusters": [], "pipeline_running": (_pipeline_status["discovery"]["status"] == "running")}
 
+    try:
+        manifest = _load_and_sync_manifest()
+    except Exception:
+        manifest = {}
+
     clusters_dir = cfg.CLUSTERS_DIR
     if not clusters_dir.exists():
-        return {"clusters": []}
+        return {"clusters": [], "global_icc": 0.0, "global_silhouette": 0.0, "mean_cohesion": 0.0}
 
     clusters = []
+    manifest_clusters = manifest.get("clusters", {})
+    cohesions_list = []
+
     for d in sorted(clusters_dir.iterdir()):
-        if d.is_dir():
+        if d.is_dir() and d.name not in ("__pycache__",):
             from src.utils.io_helpers import list_images
             images = list_images(d)
+            m_entry = manifest_clusters.get(d.name, {})
+            defect_name = m_entry.get("defect_name")
+            cohesion_val = m_entry.get("cohesion")
+            
+            if cohesion_val is not None:
+                cohesions_list.append(cohesion_val)
+                
             clusters.append({
                 "name": d.name,
                 "image_count": len(images),
                 "images": [img.name for img in images],
+                "defect_name": defect_name,
+                "cohesion": cohesion_val,
             })
-    return {"clusters": clusters}
+
+    mean_cohesion = sum(cohesions_list) / len(cohesions_list) if cohesions_list else 0.0
+
+    return {
+        "clusters": clusters,
+        "global_icc": manifest.get("global_icc", 0.0),
+        "global_silhouette": manifest.get("global_silhouette", 0.0),
+        "mean_cohesion": round(mean_cohesion, 4),
+    }
 
 
 @app.get("/api/model-versions")
@@ -684,6 +709,7 @@ class SmartRetrainRequest(BaseModel):
     epochs: int | None = None
     imgsz: int | None = None
     batch_size: int | None = None
+    freeze: int | None = None  # user override; None = let LLM decide
 
 
 @app.post("/api/retraining/smart-trigger")
@@ -700,6 +726,7 @@ async def smart_retrain(req: SmartRetrainRequest, background_tasks: BackgroundTa
             epochs=req.epochs,
             imgsz=req.imgsz,
             batch_size=req.batch_size,
+            freeze=req.freeze,
         ),
     )
     return {"message": "Smart retraining triggered (LLM will advise)", "status": "starting"}
@@ -1187,6 +1214,127 @@ def _build_label_mapping(manifest: dict) -> list[dict]:
                     "box_2d_raw": crop.get("box_2d_raw", []),
                 })
     return label_mapping
+
+
+# ── Side-by-Side YOLO Inference Comparison ───────────────────
+
+@app.post("/api/inference/compare")
+async def inference_compare(file: UploadFile = File(...), conf: float = 0.10):
+    """
+    Run both the baseline and finetuned YOLO models on a single uploaded
+    image and return annotated results side-by-side.
+    """
+    import io
+    import base64
+    import cv2
+    import numpy as np
+
+    baseline_path = cfg.MODELS_DIR / "best_initial.pt"
+    finetuned_path = cfg.YOLO_MODEL_PATH  # models/best.pt
+
+    if not baseline_path.exists():
+        raise HTTPException(404, "Baseline model (best_initial.pt) not found")
+    if not finetuned_path.exists():
+        raise HTTPException(404, "Finetuned model (best.pt) not found")
+
+    # Read uploaded image
+    contents = await file.read()
+    nparr = np.frombuffer(contents, np.uint8)
+    img_original = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img_original is None:
+        raise HTTPException(400, "Invalid image file")
+
+    from ultralytics import YOLO
+
+    def _run_model(model_path, img):
+        """Run a YOLO model and return (annotated_b64, detections_list)."""
+        model = YOLO(str(model_path))
+        results = model.predict(img, conf=conf, verbose=False)
+        result = results[0]
+
+        annotated = img.copy()
+        detections = []
+
+        # Color palette for drawing — distinct hues
+        palette = [
+            (16, 185, 129),   # emerald
+            (59, 130, 246),   # blue
+            (245, 158, 11),   # amber
+            (239, 68, 68),    # red
+            (168, 85, 247),   # purple
+            (236, 72, 153),   # pink
+            (20, 184, 166),   # teal
+            (251, 191, 36),   # yellow
+        ]
+
+        for box in result.boxes:
+            cls_id = int(box.cls[0])
+            conf_val = float(box.conf[0])
+            label = result.names.get(cls_id, f"class_{cls_id}")
+            x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
+
+            color = palette[cls_id % len(palette)]
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+
+            text = f"{label} {conf_val:.0%}"
+            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            cv2.rectangle(annotated, (x1, y1 - th - 6), (x1 + tw + 4, y1), color, -1)
+            cv2.putText(annotated, text, (x1 + 2, y1 - 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+
+            detections.append({
+                "label": label,
+                "confidence": round(conf_val, 4),
+                "box": [x1, y1, x2, y2],
+            })
+
+        # Encode annotated image as base64 JPEG
+        _, buf = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        b64 = base64.b64encode(buf.tobytes()).decode("utf-8")
+
+        class_names = list(result.names.values()) if result.names else []
+        return b64, detections, class_names
+
+    baseline_b64, baseline_dets, baseline_classes = _run_model(baseline_path, img_original)
+    finetuned_b64, finetuned_dets, finetuned_classes = _run_model(finetuned_path, img_original)
+
+    return {
+        "baseline": {
+            "image_b64": baseline_b64,
+            "detections": baseline_dets,
+            "num_detections": len(baseline_dets),
+            "classes": baseline_classes,
+            "model": "Baseline (v1 — 6 classes)",
+        },
+        "finetuned": {
+            "image_b64": finetuned_b64,
+            "detections": finetuned_dets,
+            "num_detections": len(finetuned_dets),
+            "classes": finetuned_classes,
+            "model": "Finetuned (latest — expanded classes)",
+        },
+    }
+
+
+@app.get("/api/input-images")
+async def list_input_images():
+    """List available input images for inference testing."""
+    if not cfg.INPUT_IMAGES_DIR.exists():
+        return []
+    # Return ALL images — no [:10] cap. img_02_* files contain actual detections.
+    return [f.name for f in sorted(cfg.INPUT_IMAGES_DIR.glob("*")) if f.suffix.lower() in (".jpg", ".jpeg", ".png", ".bmp")]
+
+@app.get("/api/input-images/{filename}")
+async def serve_input_image(filename: str):
+    """Serve a full input image for inference testing."""
+    image_path = cfg.INPUT_IMAGES_DIR / filename
+    if not image_path.exists():
+        raise HTTPException(404, f"Image not found: {filename}")
+    return FileResponse(
+        str(image_path),
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 # ── Parameterized Cluster Image Serving ──────────────────────

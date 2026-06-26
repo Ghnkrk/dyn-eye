@@ -1,0 +1,224 @@
+1. LLM Fundamentals (Know Well, Don't Obsess)
+Transformer architecture
+Attention mechanisms
+Tokenization
+Embeddings
+Positional encodings
+Context windows
+Decoding strategies (greedy, beam, top-k, top-p, temperature)
+KV cache basics
+2. Prompt Engineering
+Zero-shot / Few-shot prompting
+System prompt design
+Structured outputs
+Tool calling prompts
+Prompt optimization
+Self-consistency
+Reflection techniques
+Prompt versioning
+3. Advanced RAG ⭐⭐⭐⭐⭐
+Chunking strategies
+Contextual chunking
+Semantic chunking
+Metadata extraction
+Embedding model selection
+Hybrid search (BM25 + dense)
+Query rewriting
+Multi-query retrieval
+Parent-child retrieval
+Context compression
+Reranking (cross-encoders)
+Citation generation
+Retrieval evaluation
+Hallucination mitigation
+Long-context strategies
+Agentic RAG
+Graph RAG
+Multi-modal RAG
+4. LLM Evaluation ⭐⭐⭐⭐⭐
+Benchmark dataset creation
+Golden datasets
+Human evaluation
+LLM-as-a-judge
+Pairwise evaluation
+Faithfulness metrics
+Groundedness
+Answer relevance
+Context precision/recall
+Regression testing
+A/B testing
+Error taxonomy
+Automated eval pipelines
+5. AI Agents ⭐⭐⭐⭐⭐
+ReAct paradigm
+Planning vs execution
+Tool use
+Memory systems
+Reflection loops
+Multi-agent collaboration
+Task decomposition
+State management
+Failure recovery
+Agent orchestration
+Long-running workflows
+6. Model Context Protocol (MCP)
+MCP architecture
+Resources
+Tools
+Prompts
+Transport layer
+Server implementation
+Client implementation
+Remote MCP
+Security considerations
+7. Fine-tuning & Adaptation
+Supervised fine-tuning (SFT)
+LoRA
+QLoRA
+Adapters
+Prefix tuning
+Distillation
+Synthetic data generation
+Dataset curation
+Evaluation after fine-tuning
+8. Alignment & Preference Learning
+RLHF
+RLAIF
+DPO
+Reward models
+Preference datasets
+Constitutional AI
+Safety alignment
+Refusal behavior
+9. Inference Engineering ⭐⭐⭐⭐⭐
+Quantization
+KV cache optimization
+Speculative decoding
+Prefix caching
+Continuous batching
+Tensor parallelism
+Pipeline parallelism
+FlashAttention
+Memory optimization
+Throughput vs latency trade-offs
+10. Model Serving & Deployment
+vLLM
+SGLang
+TensorRT-LLM
+TGI (Text Generation Inference)
+Ollama
+API gateways
+Autoscaling
+GPU scheduling
+Streaming responses
+Cost optimization
+11. Vector Search Systems
+FAISS
+HNSW
+IVF indexes
+PQ quantization
+ANN algorithms
+Similarity metrics
+Vector databases
+Index tuning
+Filtering strategies
+12. AI System Design ⭐⭐⭐⭐⭐
+End-to-end LLM architecture
+Request routing
+Orchestration
+Caching layers
+Memory architecture
+Observability
+Logging
+Fallback strategies
+Rate limiting
+Multi-model routing
+13. Guardrails & Safety
+Prompt injection defense
+Jailbreak detection
+PII protection
+Content moderation
+Policy enforcement
+Output filtering
+Risk scoring
+Sandboxing tools
+14. Observability & Monitoring
+Tracing
+Latency metrics
+Token usage
+Cost tracking
+Hallucination monitoring
+User feedback loops
+Drift detection
+Production debugging
+15. Structured Generation
+Function calling
+JSON mode
+Schema validation
+Tool orchestration
+XML prompting
+Deterministic outputs
+16. Knowledge Graphs & Graph RAG
+Entity extraction
+Graph construction
+Graph traversal
+Knowledge fusion
+Neo4j concepts
+Hybrid graph retrieval
+17. Multimodal AI
+Vision-language models
+OCR pipelines
+Image embeddings
+Video understanding
+Audio transcription
+Cross-modal retrieval
+18. Data Engineering for AI
+ETL pipelines
+Document preprocessing
+Data cleaning
+Deduplication
+Metadata enrichment
+Incremental indexing
+19. LLM Security
+Prompt injection attacks
+Data poisoning
+Retrieval poisoning
+Tool misuse
+Secret leakage
+Agent security
+Supply chain risks
+20. Research Literacy
+Reading arXiv papers efficiently
+Reproducing results
+Benchmark interpretation
+Ablation studies
+Error analysis
+Experimental design
+Priority Order (Most Valuable → Least)
+Priority	Topic	Importance
+⭐⭐⭐⭐⭐	Advanced RAG	Essential
+⭐⭐⭐⭐⭐	LLM Evaluation	Essential
+⭐⭐⭐⭐⭐	AI Agents	Essential
+⭐⭐⭐⭐⭐	AI System Design	Essential
+⭐⭐⭐⭐⭐	Inference Engineering	Essential
+⭐⭐⭐⭐☆	Model Serving & Deployment	High
+⭐⭐⭐⭐☆	MCP	High
+⭐⭐⭐⭐☆	Fine-tuning	High
+⭐⭐⭐⭐☆	Vector Search Systems	High
+⭐⭐⭐⭐☆	Observability	High
+⭐⭐⭐☆☆	Guardrails & Safety	Medium
+⭐⭐⭐☆☆	Structured Generation	Medium
+⭐⭐⭐☆☆	Knowledge Graphs	Medium
+⭐⭐⭐☆☆	Alignment	Medium
+⭐⭐☆☆☆	Multimodal AI	Nice to Have
+⭐⭐☆☆☆	Data Engineering	Nice to Have
+⭐⭐☆☆☆	LLM Security	Nice to Have
+⭐⭐☆☆☆	Research Literacy	Nice to Have
+The 5 pillars that will make you genuinely stand out
+Advanced RAG — retrieval quality, reranking, citations, Graph RAG, agentic workflows.
+LLM Evaluation — automated benchmarks, faithfulness, regression testing, LLM-as-a-judge.
+AI Agents — planning, memory, orchestration, tool use, recovery from failures.
+Inference & Deployment — serving models efficiently and understanding performance trade-offs.
+AI System Design — architecting production-ready LLM applications end to end.
+
+Starting with Advanced RAG is an excellent choice because it naturally ties together retrieval, embeddings, vector search, evaluation, agents, and system design. Once you understand industry-grade RAG, many of the other topics become much easier to contextualize.
