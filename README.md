@@ -105,7 +105,7 @@ Measured on a single representative run against a real industrial inspection dat
 ## Repository Structure
 
 ```
-Protosem2/
+dyn-eye/
 ├── config.py                   # Central config — paths, thresholds, and VLM settings
 ├── main.py                     # CLI entry point (dashboard / discover / retrain / setup-faiss)
 ├── pyproject.toml              # uv-managed dependencies
@@ -188,8 +188,8 @@ Protosem2/
 ### 1. Clone and enter the repo
 
 ```bash
-git clone <your-repo-url>
-cd Protosem2
+git clone [<your-repo-url>](https://github.com/Ghnkrk/dyn-eye)
+cd dyn-eye
 ```
 
 ### 2. Install dependencies
