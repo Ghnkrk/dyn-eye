@@ -47,7 +47,7 @@ Input Images ──► YOLO Inference ──► Known? ──► SKIP (already t
 | **Object Detection** | YOLOv8/v10/v11 (Ultralytics) | Detects known defects using the active model version |
 | **Feature Extraction** | DINOv2 ViT-S/14 (384-dim) | Embeds candidate crops into a high-dimensional visual feature space |
 | **Novelty Detection** | FAISS IndexFlatL2 | Filters known-looking crops based on registry embeddings |
-| **Clustering** | HDBSCAN + DBCV grid search | Groups remaining novel anomaly crops into coherent clusters |
+| **Clustering** | HDBSCAN (auto-tuned) | Groups remaining novel anomaly crops into coherent clusters |
 | **VLM Annotation** | Google Gemini (`gemma-4-31b-it`) | Detects and annotates visual anomaly traits within crops |
 | **LLM Advisor & Prompting** | Groq (`llama-3.3-70b-versatile`) | Generates dynamic VLM prompts and advises on retraining readiness |
 | **Cluster Quality Metric** | Statistical ICC (one-way ANOVA) | Measures cluster cohesion and separation using DINOv2 embeddings |
@@ -73,8 +73,6 @@ Measured on a single representative run against a real industrial inspection dat
 | Crops per cluster | c_000: 15, c_001: 4, c_002: 8, c_003: 5, c_004: 15, c_005: 2, c_006: 8 |
 | Noise / unassigned crops | 0 noise + 0 unassigned |
 | Dimensionality reduction | PCA 384D → 5D (UMAP fallback) |
-| DBCV score | -0.5000 (standard density partition score) |
-| Registry hit rate | 28.57% (2/7 clusters matched fingerprints) |
 
 ### Cluster Quality — Statistical ICC (DINOv2 Embedding Space)
 
