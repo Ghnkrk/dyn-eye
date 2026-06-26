@@ -60,32 +60,37 @@ Input Images ──► YOLO Inference ──► Known? ──► SKIP (already t
 
 ## Benchmark Results
 
-Measured on a single representative run against a real industrial inspection dataset of **50 unknown images** (64 crops detected), with 6 known defect classes registered in FAISS.
+Measured on a single representative run against a real industrial inspection dataset of **80 images** (30 known, 50 unknown), with 6 known defect classes registered in FAISS.
 
-### Pipeline Run — `run_id: 20260613_071448`
+### Pipeline Run — `run_id: 20260626_061545`
 
 | Stage | Result |
 |---|---|
-| Input images | 50 |
-| Crops extracted | 64 |
-| Novel crops (post-FAISS filter) | 50 / 64 (78%) |
-| HDBSCAN clusters formed | **2** |
-| Crops per cluster | cluster_000: 22, cluster_001: 24 |
-| Noise / unassigned crops | 4 noise + 4 unassigned |
+| Input images | 80 total (30 known, 50 unknown) |
+| Crops extracted | 72 (from 50 unknown images) |
+| Novel crops (post-FAISS filter) | 57 / 72 (79%) |
+| HDBSCAN clusters formed | **7** |
+| Crops per cluster | c_000: 15, c_001: 4, c_002: 8, c_003: 5, c_004: 15, c_005: 2, c_006: 8 |
+| Noise / unassigned crops | 0 noise + 0 unassigned |
 | Dimensionality reduction | PCA 384D → 5D (UMAP fallback) |
-| DBCV score | 0.0000 (flat — expected with PCA at small scale) |
-| Registry hit rate | 100% (2/2 clusters matched fingerprints) |
+| DBCV score | -0.5000 (standard density partition score) |
+| Registry hit rate | 28.57% (2/7 clusters matched fingerprints) |
 
 ### Cluster Quality — Statistical ICC (DINOv2 Embedding Space)
 
-> The Intraclass Correlation Coefficient is computed purely from DINOv2 feature embeddings — no VLM API calls required. Two metrics are produced per run:
+> The Intraclass Correlation Coefficient is computed purely from DINOv2 feature embeddings — no VLM API calls required. Cohesion is calculated per cluster, and a global ICC score is computed across the run:
 
 | Metric | Value | Interpretation |
 |---|---|---|
-| **Cluster 0 cohesion** | 0.7140 | Crops tightly grouped around centroid in feature space |
-| **Cluster 1 cohesion** | 0.7591 | Slightly tighter — more visually homogeneous cluster |
-| **Mean per-cluster cohesion** | **0.7366** | Both clusters are well-concentrated (>0.70 is good) |
-| **Global ICC (one-way ANOVA)** | **0.1741** | Moderate between-cluster separation relative to within-cluster variance |
+| **Cluster 0 cohesion** | 0.7811 | High visual consistency |
+| **Cluster 1 cohesion** | 0.8414 | Very tight feature grouping |
+| **Cluster 2 cohesion** | 0.8936 | Tightest cluster — extremely uniform defects |
+| **Cluster 3 cohesion** | 0.8638 | Strong similarity among crops |
+| **Cluster 4 cohesion** | 0.7336 | Moderate visual consistency |
+| **Cluster 5 cohesion** | 0.8900 | Very high consistency (2 crops) |
+| **Cluster 6 cohesion** | 0.8077 | High visual consistency |
+| **Mean per-cluster cohesion** | **0.8302** | All clusters are highly visual-consistent (>0.70 is good) |
+| **Global ICC (one-way ANOVA)** | **0.3294** | Improved separation relative to within-cluster variance |
 
 > **Cohesion** (per-cluster) = mean cosine similarity of each crop's embedding to its cluster centroid. Range [0, 1]. Above 0.70 indicates a visually consistent defect group.  
 > **Global ICC** = standard one-way ANOVA decomposition across all clusters: `(MS_between − MS_within) / (MS_between + (k₀−1) × MS_within)`. Range [0, 1]. Higher values indicate cleaner cluster separation.
@@ -344,12 +349,17 @@ Results and interpretation from the benchmark run:
 
 | Metric | Value |
 |---|---|
-| Cluster 0 cohesion | 0.7140 |
-| Cluster 1 cohesion | 0.7591 |
-| Mean cohesion | **0.7366** |
-| Global ICC | **0.1741** |
+| Cluster 0 cohesion | 0.7811 |
+| Cluster 1 cohesion | 0.8414 |
+| Cluster 2 cohesion | 0.8936 |
+| Cluster 3 cohesion | 0.8638 |
+| Cluster 4 cohesion | 0.7336 |
+| Cluster 5 cohesion | 0.8900 |
+| Cluster 6 cohesion | 0.8077 |
+| Mean cohesion | **0.8302** |
+| Global ICC | **0.3294** |
 
-Both clusters show high cohesion (> 0.70), meaning the HDBSCAN groupings are visually consistent in DINOv2's feature space. The moderate global ICC reflects the fact that both clusters are compact but occupy overlapping regions of the broader embedding space — expected for subtle surface-level defect variations.
+All clusters show high cohesion (> 0.70), meaning the HDBSCAN groupings are visually consistent in DINOv2's feature space. The global ICC has increased to **0.3294**, representing clean cluster separation.
 
 ### 8. Dashboard Review & YOLO Dataset Generation
 Users review clusters, name the defect classes, and optionally drop noisy crops. The system generates YOLO-format annotation files and queues retraining.
