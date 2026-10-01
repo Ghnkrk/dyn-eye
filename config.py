@@ -81,7 +81,7 @@ def _env(name: str, default: str = "") -> str:
 =======
 GEMINI_API_KEY = os.environ.get(
     "GEMINI_API_KEY",
-    "=",
+    "AIzaSyCOTORQ_xn-j-OffOrNibKtEGEGMf7_Zm0",
 ).strip("'\" ")
 os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY
 >>>>>>> 8131959fae1c5eaeac2a047c4d746d33d3dc573d
