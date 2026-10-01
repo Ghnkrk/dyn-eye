@@ -74,9 +74,17 @@ KNOWN_DEFECT_NAMES: list[str] = _load_known_names()
 # ============================================================
 # LLM / VLM SETTINGS
 # ============================================================
+<<<<<<< HEAD
 # Secrets come ONLY from the environment / .env (never hardcode defaults here).
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip().strip("'\" ")
+=======
+GEMINI_API_KEY = os.environ.get(
+    "GEMINI_API_KEY",
+    "=",
+).strip("'\" ")
+os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY
+>>>>>>> 8131959fae1c5eaeac2a047c4d746d33d3dc573d
 
 GEMINI_API_KEY = _env("GEMINI_API_KEY")   # VLM only (Google GenAI)
 GROQ_API_KEY = _env("GROQ_API_KEY")       # every text-LLM call (Groq)

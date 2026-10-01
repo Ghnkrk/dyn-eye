@@ -188,7 +188,11 @@ dyn-eye/
 ### 1. Clone and enter the repo
 
 ```bash
+<<<<<<< HEAD
 git clone https://github.com/Ghnkrk/dyn-eye.git
+=======
+git clone [<your-repo-url>](https://github.com/Ghnkrk/dyn-eye)
+>>>>>>> 8131959fae1c5eaeac2a047c4d746d33d3dc573d
 cd dyn-eye
 ```
 
