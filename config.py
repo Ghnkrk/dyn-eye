@@ -69,7 +69,7 @@ KNOWN_DEFECT_NAMES: list[str] = _load_known_names()
 # ============================================================
 GEMINI_API_KEY = os.environ.get(
     "GEMINI_API_KEY",
-    "=",
+    "AIzaSyCOTORQ_xn-j-OffOrNibKtEGEGMf7_Zm0",
 ).strip("'\" ")
 os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY
 
