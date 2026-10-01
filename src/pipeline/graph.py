@@ -13,6 +13,7 @@ Chains all 7 nodes of the unknown defect discovery pipeline:
 from __future__ import annotations
 
 import shutil
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -144,13 +145,30 @@ def build_discovery_graph() -> StateGraph:
     #     → manifest_save        (manifest save + ICC annotation + metrics)
     #     → END
     #
+    # Gated edges stop the run when a node errors or yields nothing.
     graph.add_edge(START,                "yolo_inference")
-    graph.add_edge("yolo_inference",     "dataset_context")
+    graph.add_conditional_edges(
+        "yolo_inference",
+        _gate("dataset_context", "unknown_image_paths", "unknown images"),
+        {"dataset_context": "dataset_context", END: END},
+    )
     graph.add_edge("dataset_context",    "vlm_annotation")
-    graph.add_edge("vlm_annotation",     "crop_extraction")
-    graph.add_edge("crop_extraction",    "feature_extraction")
+    graph.add_conditional_edges(
+        "vlm_annotation",
+        _gate("crop_extraction", "vlm_annotations", "VLM annotations"),
+        {"crop_extraction": "crop_extraction", END: END},
+    )
+    graph.add_conditional_edges(
+        "crop_extraction",
+        _gate("feature_extraction", "crop_paths", "crops"),
+        {"feature_extraction": "feature_extraction", END: END},
+    )
     graph.add_edge("feature_extraction", "faiss_search")
-    graph.add_edge("faiss_search",       "hdbscan_cluster")
+    graph.add_conditional_edges(
+        "faiss_search",
+        _gate("hdbscan_cluster", "novel_indices", "novel crops"),
+        {"hdbscan_cluster": "hdbscan_cluster", END: END},
+    )
     graph.add_edge("hdbscan_cluster",    "manifest_save")
     graph.add_edge("manifest_save",       END)
 
@@ -177,15 +195,73 @@ def _remap_cache_paths(annotations: list[dict]) -> list[dict]:
 
 
 def _clean_previous_run() -> None:
-    """Delete old crops and clusters from previous pipeline runs."""
-    for target_dir in [cfg.CROPS_DIR, cfg.CLUSTERS_DIR]:
-        if target_dir.exists():
-            shutil.rmtree(target_dir)
-            log.info(f"Cleaned previous run data: {target_dir}")
-        target_dir.mkdir(parents=True, exist_ok=True)
+    """
+    Delete old crops and cluster folders from previous pipeline runs.
+
+    The cluster fingerprint registry and tuning cache live inside
+    CLUSTERS_DIR but must survive across runs (that is their whole purpose),
+    so everything else is removed item by item instead of rmtree-ing the dir.
+    """
+    if cfg.CROPS_DIR.exists():
+        shutil.rmtree(cfg.CROPS_DIR)
+        log.info(f"Cleaned previous run data: {cfg.CROPS_DIR}")
+    cfg.CROPS_DIR.mkdir(parents=True, exist_ok=True)
+
+    preserved = {cfg.CLUSTER_REGISTRY_PATH.name, cfg.CLUSTER_TUNING_CACHE_PATH.name}
+    if cfg.CLUSTERS_DIR.exists():
+        for item in cfg.CLUSTERS_DIR.iterdir():
+            if item.name in preserved:
+                continue
+            if item.is_dir():
+                shutil.rmtree(item, ignore_errors=True)
+            else:
+                item.unlink(missing_ok=True)
+        log.info(f"Cleaned previous run data: {cfg.CLUSTERS_DIR} (kept {sorted(preserved)})")
+    cfg.CLUSTERS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# ── Failure gating ───────────────────────────────────────────
+
+def _gate(next_node: str, required_key: str | None = None, what: str = "items"):
+    """
+    Build a conditional-edge router: stop the run early when the previous
+    node reported errors or produced nothing, instead of letting later
+    nodes run on empty state and report a misleading "successful" run.
+    """
+    def router(state: dict) -> str:
+        errors = state.get("errors") or []
+        if errors:
+            log.error(f"Stopping pipeline before '{next_node}': {errors[-1]}")
+            LogStream.emit(f"Pipeline stopped: {errors[-1]}", level="error", source="pipeline")
+            return END
+        if required_key is not None and not state.get(required_key):
+            log.warning(f"Stopping pipeline before '{next_node}': no {what}.")
+            LogStream.emit(f"Pipeline stopped early: no {what} to process.",
+                           level="warning", source="pipeline")
+            return END
+        return next_node
+    return router
+
+
+# One discovery run at a time (dashboard, CLI and orchestrator share this process)
+_run_lock = threading.Lock()
 
 
 def run_discovery_pipeline(
+    input_images_dir: str | None = None,
+    yolo_model_path: str | None = None,
+    use_cache: bool = False,
+) -> dict:
+    """Execute the discovery pipeline; refuses to start if one is already running."""
+    if not _run_lock.acquire(blocking=False):
+        raise RuntimeError("A discovery pipeline run is already in progress.")
+    try:
+        return _run_discovery_pipeline(input_images_dir, yolo_model_path, use_cache)
+    finally:
+        _run_lock.release()
+
+
+def _run_discovery_pipeline(
     input_images_dir: str | None = None,
     yolo_model_path: str | None = None,
     use_cache: bool = False,

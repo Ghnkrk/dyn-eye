@@ -5,7 +5,7 @@ Runs as a background daemon that:
   1. Monitors cluster folders for new images
   2. Watches for human-assigned defect names in the dashboard manifest
   3. Maps cluster names back as labels on original full images (YOLO format)
-  4. Uses Gemini to decide when retraining should be triggered
+  4. Uses LLM to decide when retraining should be triggered
   5. Auto-triggers the retraining pipeline
 
 The only human interaction is naming clusters in the DYN-EYE dashboard.
@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 import config as cfg
 from src.utils import get_logger, save_json, load_json, LogStream
 from src.utils.io_helpers import list_images
+from src.utils.llm import chat_json
 
 log = get_logger("orchestrator")
 
@@ -127,6 +128,50 @@ class AnnotationMapper:
             return load_json(self._crop_mapping_file)
         return {}
 
+    @staticmethod
+    def _add_replay_samples(samples: dict[str, dict], label_to_idx: dict[str, int]) -> int:
+        """
+        Add known-class images (pseudo-labelled by the current model during the
+        discovery run) to `samples` so fine-tuning keeps the old classes.
+        Deterministic subset, capped at cfg.REPLAY_MAX_IMAGES.
+        """
+        import hashlib
+        if not cfg.KNOWN_REPLAY_JSON.exists():
+            return 0
+        try:
+            replay = load_json(cfg.KNOWN_REPLAY_JSON)
+        except Exception as e:
+            log.warning(f"Could not read replay file: {e}")
+            return 0
+
+        name_to_idx = {n.lower(): i for n, i in label_to_idx.items()}
+        candidates = sorted(replay, key=lambda r: hashlib.md5(r["image_path"].encode()).hexdigest())
+        added = 0
+        for rec in candidates:
+            if added >= cfg.REPLAY_MAX_IMAGES:
+                break
+            src = Path(rec["image_path"])
+            if not src.exists():
+                fallback = cfg.INPUT_IMAGES_DIR / src.name
+                if not fallback.exists():
+                    continue
+                src = fallback
+            if src.stem in samples:      # never override a newly named label
+                continue
+            lines = []
+            for d in rec["detections"]:
+                idx = name_to_idx.get(d["class_name"].lower())
+                if idx is None:
+                    continue
+                cx, cy, w, h = d["bbox_xywhn"]
+                lines.append(f"{idx} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
+            if lines:
+                samples[src.stem] = {"src": src, "lines": lines}
+                added += 1
+        if added:
+            log.info(f"Replay: added {added} known-class images as pseudo-labelled samples")
+        return added
+
     def map_cluster_labels_to_yolo(
         self,
         cluster_labels: dict[str, str],
@@ -142,22 +187,26 @@ class AnnotationMapper:
         Returns:
             dict with stats about mapped annotations
         """
-        vlm_data = self.load_vlm_annotations()
+        import hashlib
+        import shutil
+
         crop_map = self.load_crop_mapping()
+        label_names = list(label_names)
 
         yolo_dir = cfg.YOLO_DATASET_DIR
-        images_dir = yolo_dir / "images" / "train"
-        labels_dir = yolo_dir / "labels" / "train"
-        images_dir.mkdir(parents=True, exist_ok=True)
-        labels_dir.mkdir(parents=True, exist_ok=True)
+        for split in ("train", "val"):
+            (yolo_dir / "images" / split).mkdir(parents=True, exist_ok=True)
+            (yolo_dir / "labels" / split).mkdir(parents=True, exist_ok=True)
 
         # Build label index
         label_to_idx = {name: idx for idx, name in enumerate(label_names)}
 
+        # ── Pass 1: collect de-duplicated labels per source image ──
+        # Label files are REWRITTEN (not appended) from this in-memory view, so
+        # re-running the mapper is idempotent instead of piling up duplicate boxes.
+        samples: dict[str, dict] = {}
         total_mapped = 0
-        total_images = 0
 
-        # Walk through cluster directories
         for cluster_name, label_name in cluster_labels.items():
             cluster_dir = cfg.CLUSTERS_DIR / cluster_name
             if not cluster_dir.exists():
@@ -169,37 +218,65 @@ class AnnotationMapper:
                 label_idx = len(label_names) - 1
                 label_to_idx[label_name] = label_idx
 
-            # For each crop in the cluster, find the source image
             for crop_path in list_images(cluster_dir):
-                crop_name = crop_path.stem
-                source_info = crop_map.get(crop_name, {})
+                source_info = crop_map.get(crop_path.stem, {})
                 source_image = source_info.get("source_image", "")
                 bbox = source_info.get("bbox_normalized")  # [x_center, y_center, w, h]
-
                 if not source_image or not bbox:
                     continue
 
-                # Copy source image to YOLO dataset
                 src_img = Path(source_image)
-                if src_img.exists():
-                    import shutil
-                    dst_img = images_dir / src_img.name
-                    if not dst_img.exists():
-                        shutil.copy2(str(src_img), str(dst_img))
-                        total_images += 1
+                if not src_img.exists():
+                    # Fallback to the current project input images directory
+                    fallback_img = cfg.INPUT_IMAGES_DIR / src_img.name
+                    if fallback_img.exists():
+                        src_img = fallback_img
+                if not src_img.exists():
+                    continue
 
-                    # Write/append YOLO label
-                    label_file = labels_dir / (src_img.stem + ".txt")
-                    line = f"{label_idx} {bbox[0]:.6f} {bbox[1]:.6f} {bbox[2]:.6f} {bbox[3]:.6f}\n"
-                    with open(label_file, "a") as f:
-                        f.write(line)
+                line = f"{label_idx} {bbox[0]:.6f} {bbox[1]:.6f} {bbox[2]:.6f} {bbox[3]:.6f}"
+                entry = samples.setdefault(src_img.stem, {"src": src_img, "lines": []})
+                if line not in entry["lines"]:
+                    entry["lines"].append(line)
                     total_mapped += 1
 
-        # Write data.yaml
+        # ── Replay: known images + current-model detections as pseudo-labels ──
+        replay_images = self._add_replay_samples(samples, label_to_idx)
+
+        # ── Pass 2: deterministic train/val split (~20% val) ──
+        # Hash-based so an image keeps its split as the dataset grows.
+        def _bucket(stem: str) -> int:
+            return int(hashlib.md5(stem.encode()).hexdigest(), 16) % 5
+
+        stems = sorted(samples)
+        val_stems: set[str] = set()
+        if len(stems) >= 5:
+            val_stems = {s for s in stems if _bucket(s) == 0}
+            if not val_stems:  # guarantee a non-empty val set
+                val_stems = {min(stems, key=lambda s: hashlib.md5(s.encode()).hexdigest())}
+
+        total_images = 0
+        for stem, entry in samples.items():
+            split, other = ("val", "train") if stem in val_stems else ("train", "val")
+            src_img = entry["src"]
+
+            # Drop stale copies from the other split (image moved between splits)
+            (yolo_dir / "images" / other / src_img.name).unlink(missing_ok=True)
+            (yolo_dir / "labels" / other / f"{stem}.txt").unlink(missing_ok=True)
+
+            dst_img = yolo_dir / "images" / split / src_img.name
+            if not dst_img.exists():
+                shutil.copy2(str(src_img), str(dst_img))
+                total_images += 1
+            (yolo_dir / "labels" / split / f"{stem}.txt").write_text(
+                "\n".join(entry["lines"]) + "\n", encoding="utf-8"
+            )
+
+        # Write data.yaml (tiny datasets have no val split → validate on train)
         data_yaml = {
             "path": str(yolo_dir),
             "train": "images/train",
-            "val": "images/train",
+            "val": "images/val" if val_stems else "images/train",
             "nc": len(label_names),
             "names": label_names,
         }
@@ -219,22 +296,18 @@ class AnnotationMapper:
         return {
             "total_mapped": total_mapped,
             "total_images": total_images,
+            "replay_images": replay_images,
             "label_names": label_names,
         }
 
 
-# ── Gemini Retraining Decision Agent ────────────────────────
+# ── LLM Retraining Decision Agent ────────────────────────
 
 class RetrainingDecisionAgent:
     """
-    Uses Gemini API to analyze pipeline state and decide
-    whether retraining should be triggered.
+    Uses the configured LLM (cfg.LLM_MODEL_ID via src.utils.llm) to analyze
+    pipeline state and decide whether retraining should be triggered.
     """
-
-    def __init__(self):
-        from google import genai
-        self._client = genai.Client(api_key=cfg.GEMINI_API_KEY)
-        self._model = "gemini-2.0-flash"  # Free tier
 
     def should_retrain(
         self,
@@ -244,10 +317,12 @@ class RetrainingDecisionAgent:
         last_training_date: str | None = None,
     ) -> tuple[bool, str]:
         """
-        Ask Gemini whether we should trigger retraining now.
+        Ask the LLM whether we should trigger retraining now.
 
         Returns:
             (should_retrain: bool, reasoning: str)
+            A reason starting with "Decision API error" means the call failed
+            (transient) and the caller should retry later.
         """
         prompt = f"""You are an autonomous ML pipeline orchestrator for an industrial defect detection system.
 
@@ -267,17 +342,8 @@ Respond ONLY with a JSON object:
 {{"retrain": true/false, "reason": "brief explanation"}}
 """
         try:
-            from google.genai import types
-            response = self._client.models.generate_content(
-                model=self._model,
-                contents=[prompt],
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.1,
-                ),
-            )
-            result = json.loads(response.text)
-            should = result.get("retrain", False)
+            result = chat_json(prompt, temperature=0.1)
+            should = bool(result.get("retrain", False))
             reason = result.get("reason", "No reason provided")
 
             LogStream.emit(
@@ -288,8 +354,8 @@ Respond ONLY with a JSON object:
             return should, reason
 
         except Exception as e:
-            log.error(f"Gemini decision call failed: {e}")
-            LogStream.emit(f"Gemini decision failed: {e}", level="error", source="retrain_agent")
+            log.error(f"LLM decision call failed: {e}")
+            LogStream.emit(f"LLM decision failed: {e}", level="error", source="retrain_agent")
             return False, f"Decision API error: {e}"
 
 
@@ -305,7 +371,7 @@ class AutonomousOrchestrator:
       3. Human names clusters in the DYN-EYE dashboard (ONLY human step)
       4. Orchestrator detects named clusters from manifest
       5. Maps labels back to original images in YOLO format
-      6. Gemini agent decides if retraining should happen
+      6. LLM agent decides if retraining should happen
       7. Retraining pipeline runs autonomously
     """
 
@@ -313,10 +379,38 @@ class AutonomousOrchestrator:
         self.watcher = ClusterWatcher()
         self.manifest_poller = ManifestPoller()
         self.mapper = AnnotationMapper()
-        self.decision_agent = RetrainingDecisionAgent()
+        self._decision_agent: RetrainingDecisionAgent | None = None
         self._running = False
         self._thread: threading.Thread | None = None
         self._poll_interval = 30  # seconds
+        self._retry_after = 0.0   # epoch seconds; backoff after a failed decision call
+        self._state_path = cfg.DATA_DIR / "orchestrator_state.json"
+
+    @property
+    def decision_agent(self) -> "RetrainingDecisionAgent":
+        """Built lazily so importing this module never requires a LLM key."""
+        if self._decision_agent is None:
+            self._decision_agent = RetrainingDecisionAgent()
+        return self._decision_agent
+
+    # ── Persisted state (survives restarts, prevents re-processing) ──
+    def _load_state(self) -> dict:
+        try:
+            return load_json(self._state_path)
+        except Exception:
+            return {}
+
+    def _save_state(self, **updates) -> None:
+        state = self._load_state()
+        state.update(updates)
+        save_json(state, self._state_path)
+
+    @staticmethod
+    def _signature(named: dict[str, str], cluster_stats: dict[str, int]) -> str:
+        """Fingerprint of (names, cluster sizes): changes only when there is something new to act on."""
+        import hashlib
+        canon = json.dumps({"named": named, "stats": cluster_stats}, sort_keys=True)
+        return hashlib.sha256(canon.encode()).hexdigest()[:16]
 
     @property
     def is_running(self) -> bool:
@@ -364,50 +458,79 @@ class AutonomousOrchestrator:
 
         # 2. Check if clusters have been named in the dashboard manifest
         named = self.manifest_poller.check_named_clusters()
-        if named:
+        if not named:
+            return
+
+        # Nothing new since the last time we acted on this exact state → no-op.
+        cluster_stats = self.watcher.get_all_clusters()
+        signature = self._signature(named, cluster_stats)
+        state = self._load_state()
+        if state.get("processed_signature") == signature:
+            return
+        if time.time() < self._retry_after:
+            return
+
+        LogStream.emit(
+            f"Found {len(named)} named clusters in manifest",
+            level="step",
+            source="manifest_poller",
+        )
+
+        # 3. Map labels back to original images (idempotent rewrite)
+        from src.features.known_defects_registry import get_known_defect_names
+        known_classes = get_known_defect_names()
+        mapping_result = self.mapper.map_cluster_labels_to_yolo(
+            cluster_labels=named,
+            label_names=list(known_classes),
+        )
+
+        if mapping_result["total_mapped"] == 0:
+            self._save_state(processed_signature=signature)
+            return
+
+        # 4. Ask LLM if we should retrain
+        should, reason = self.decision_agent.should_retrain(
+            cluster_stats=cluster_stats,
+            named_clusters=named,
+            current_model_classes=known_classes,
+            last_training_date=state.get("last_trained_at"),
+        )
+        if reason.startswith("Decision API error"):
+            # Transient failure: don't mark processed, but back off 5 min
+            self._retry_after = time.time() + 300
+            return
+
+        if should:
             LogStream.emit(
-                f"Found {len(named)} named clusters in manifest",
+                "Auto-triggering retraining pipeline",
                 level="step",
-                source="manifest_poller",
+                source="orchestrator",
             )
+            if not self._run_retraining(project_id):
+                # Busy or failed to start: leave unprocessed so we retry later
+                self._retry_after = time.time() + 300
+                return
 
-            # 3. Map labels back to original images
-            cluster_stats = self.watcher.get_all_clusters()
-            known_classes = cfg.KNOWN_DEFECT_NAMES.copy()
-            mapping_result = self.mapper.map_cluster_labels_to_yolo(
-                cluster_labels=named,
-                label_names=known_classes,
-            )
+        # Decision made (retrained or declined): don't re-ask until state changes
+        self._save_state(processed_signature=signature)
 
-            if mapping_result["total_mapped"] > 0:
-                # 4. Ask Gemini if we should retrain
-                should, reason = self.decision_agent.should_retrain(
-                    cluster_stats=cluster_stats,
-                    named_clusters=named,
-                    current_model_classes=cfg.KNOWN_DEFECT_NAMES,
-                )
-
-                if should:
-                    LogStream.emit(
-                        "Auto-triggering retraining pipeline",
-                        level="step",
-                        source="orchestrator",
-                    )
-                    self._run_retraining(project_id)
-
-    def _run_retraining(self, project_id: int | None):
-        """Trigger the retraining pipeline."""
+    def _run_retraining(self, project_id: int | None) -> bool:
+        """Trigger the retraining pipeline. Returns False if it could not run."""
         try:
             from src.retraining.agent import run_retraining_pipeline
             result = run_retraining_pipeline(project_id=project_id or -1)
             success = result.get("training_result", {}).get("success", False)
+            if success:
+                self._save_state(last_trained_at=datetime.now(timezone.utc).isoformat())
             LogStream.emit(
                 f"Retraining {'succeeded' if success else 'failed'}",
                 level="info" if success else "error",
                 source="retrain_pipeline",
             )
+            return True
         except Exception as e:
             LogStream.emit(f"Retraining failed: {e}", level="error", source="retrain_pipeline")
+            return False
 
 
 # ── Module-level singleton ───────────────────────────────────

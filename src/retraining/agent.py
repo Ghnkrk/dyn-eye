@@ -15,6 +15,7 @@ to train and with what hyperparameters.
 """
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,6 +34,7 @@ from src.retraining.tools.mlflow_deploy import deploy_model
 from src.retraining.llm_advisor import get_training_recommendation, collect_dataset_metadata
 from src.retraining.model_registry import ModelRegistry
 from src.features.known_defects_registry import (
+    get_known_defect_names,
     register_from_yolo_model,
     register_from_data_yaml,
 )
@@ -80,6 +82,7 @@ class RetrainingState(TypedDict, total=False):
 # ── Agent Nodes ──────────────────────────────────────────────
 
 _metrics: MetricsTracker | None = None
+_run_lock = threading.Lock()  # one retraining run at a time (dashboard + orchestrator)
 
 
 def export_node(state: dict) -> dict:
@@ -101,7 +104,8 @@ def export_node(state: dict) -> dict:
             return {"errors": state.get("errors", []) + [error], "export_result": {}}
 
         mapper = AnnotationMapper()
-        known_classes = cfg.KNOWN_DEFECT_NAMES.copy()
+        # Hot-read the registry (cfg.KNOWN_DEFECT_NAMES is an import-time snapshot)
+        known_classes = list(get_known_defect_names())
         result = mapper.map_cluster_labels_to_yolo(
             cluster_labels=named,
             label_names=known_classes,
@@ -314,6 +318,17 @@ def deploy_node(state: dict) -> dict:
         _metrics.start_step("deploy_model")
 
     training = state.get("training_result", {})
+    map50 = (training.get("metrics") or {}).get("map50", 0.0)
+    if training.get("success", False) and map50 < cfg.YOLO_MIN_DEPLOY_MAP50:
+        error = (
+            f"Skipping deployment: mAP50 {map50:.3f} is below the deploy gate "
+            f"({cfg.YOLO_MIN_DEPLOY_MAP50}). The active model is unchanged."
+        )
+        log.warning(error)
+        if _metrics:
+            _metrics.fail_step("deploy_model", error)
+        return {"errors": state.get("errors", []) + [error], "deploy_result": {}}
+
     if not training.get("success", False):
         error = "Skipping deployment: training failed"
         if _metrics:
@@ -350,6 +365,29 @@ def deploy_node(state: dict) -> dict:
         return {"errors": state.get("errors", []) + [str(e)], "deploy_result": {}}
 
 
+def _promote_named_crops_to_known() -> int:
+    """Copy crops of human-named clusters into data/known_defect_crops/<defect_name>/."""
+    import re
+    import shutil
+    from src.pipeline.orchestrator import ManifestPoller
+    from src.utils.io_helpers import list_images
+
+    copied = 0
+    for cluster_name, defect_name in ManifestPoller().check_named_clusters().items():
+        cluster_dir = cfg.CLUSTERS_DIR / cluster_name
+        if not cluster_dir.exists():
+            continue
+        dst_dir = cfg.KNOWN_DEFECTS_DIR / re.sub(r'[\/:*?"<>|]', "_", defect_name.strip())
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        for crop in list_images(cluster_dir):
+            dst = dst_dir / crop.name
+            if not dst.exists():
+                shutil.copy2(str(crop), str(dst))
+                copied += 1
+    log.info(f"Promoted {copied} named crops into the known-defect store")
+    return copied
+
+
 def sync_registry_node(state: dict) -> dict:
     """
     Post-deploy: update the known-defects registry and rebuild FAISS.
@@ -367,8 +405,9 @@ def sync_registry_node(state: dict) -> dict:
     deploy = state.get("deploy_result", {})
     training = state.get("training_result", {})
 
-    if not deploy.get("success") and not training.get("success"):
-        error = "Skipping registry sync: no successful deployment or training"
+    if not deploy.get("success"):
+        # Only a model that actually went live may change what counts as "known"
+        error = "Skipping registry sync: model was not deployed"
         if _metrics:
             _metrics.fail_step("sync_registry", error)
         return {"sync_result": {"skipped": True, "reason": error}}
@@ -383,7 +422,12 @@ def sync_registry_node(state: dict) -> dict:
 
         all_added = list(set(model_added + yaml_added))
 
-        # ── 3. Rebuild FAISS index ──────────────────────────────────
+        # ── 3. Promote newly named crops into the known-defect crop store ──
+        # Without this the rebuilt FAISS index would not contain the new classes
+        # and the next discovery run would keep calling them "novel".
+        promoted = _promote_named_crops_to_known()
+
+        # ── 4. Rebuild FAISS index ──────────────────────────────────
         faiss_count = 0
         try:
             manager = FAISSIndexManager()
@@ -395,6 +439,7 @@ def sync_registry_node(state: dict) -> dict:
         result = {
             "success": True,
             "new_classes_added": all_added,
+            "crops_promoted_to_known": promoted,
             "faiss_vectors": faiss_count,
         }
 
@@ -473,6 +518,22 @@ def build_retraining_graph():
 
 
 def run_retraining_pipeline(
+    project_id: int | None = None,
+    epochs: int | None = None,
+    imgsz: int | None = None,
+    batch_size: int | None = None,
+    freeze: int | None = None,
+) -> dict:
+    """Run the retraining pipeline; refuses to start if one is already running."""
+    if not _run_lock.acquire(blocking=False):
+        raise RuntimeError("A retraining run is already in progress.")
+    try:
+        return _run_retraining_pipeline(project_id, epochs, imgsz, batch_size, freeze)
+    finally:
+        _run_lock.release()
+
+
+def _run_retraining_pipeline(
     project_id: int | None = None,
     epochs: int | None = None,
     imgsz: int | None = None,

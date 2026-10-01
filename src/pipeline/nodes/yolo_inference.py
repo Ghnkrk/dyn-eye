@@ -22,6 +22,59 @@ from src.features.known_defects_registry import get_known_defect_names
 log = get_logger("yolo_inference")
 
 
+def _build_known_crop_index(known_names_lower: set[str]) -> list[tuple[str, str]]:
+    """Scan the known-defect crop registry ONCE → [(class_name, crop_file_stem), ...]."""
+    index: list[tuple[str, str]] = []
+    known_dir = Path(cfg.KNOWN_DEFECTS_DIR)
+    if not known_dir.exists():
+        return index
+    for sub in known_dir.iterdir():
+        if sub.is_dir() and sub.name.lower() in known_names_lower:
+            for crop_file in sub.iterdir():
+                if crop_file.is_file():
+                    index.append((sub.name, crop_file.stem))
+    return index
+
+
+def _match_known_crop(img_stem: str, index: list[tuple[str, str]]) -> str | None:
+    """
+    Return the class whose crop was cut from this image, else None.
+    Matches 'img1' / 'img1_crop_0' but NOT 'img10' (next char must be a separator).
+    """
+    for class_name, crop_stem in index:
+        if crop_stem.startswith(img_stem) and (
+            len(crop_stem) == len(img_stem) or not crop_stem[len(img_stem)].isalnum()
+        ):
+            return class_name
+    return None
+
+
+def _save_known_replay(raw_results: list[dict], known_names_lower: set[str]) -> None:
+    """
+    Persist confident detections on KNOWN images (YOLO-normalised boxes) so the
+    retraining export can replay them as pseudo-labels for the old classes.
+    """
+    replay = []
+    for r in raw_results:
+        if r["classified_as"] != "known":
+            continue
+        dets = [
+            {"class_name": d["class_name"], "bbox_xywhn": d["bbox_xywhn"]}
+            for d in r["detections"]
+            if d.get("class_id", -1) >= 0
+            and "bbox_xywhn" in d
+            and d["confidence"] >= cfg.REPLAY_MIN_CONF
+            and d["class_name"].lower() in known_names_lower
+        ]
+        if dets:
+            replay.append({"image_path": r["image_path"], "detections": dets})
+    try:
+        save_json(replay, str(cfg.KNOWN_REPLAY_JSON))
+        log.info(f"Saved replay pseudo-labels for {len(replay)} known images")
+    except Exception as e:
+        log.warning(f"Could not save replay file: {e}")
+
+
 def yolo_inference_node(state: dict) -> dict:
     """
     LangGraph node: YOLO batch inference.
@@ -89,6 +142,8 @@ def yolo_inference_node(state: dict) -> dict:
     unknown_paths: list[str] = []
     raw_results: list[dict] = []
 
+    known_crop_index = _build_known_crop_index(known_names_lower)
+
     # Batch inference
     batch_size = 16
     for batch_start in range(0, len(image_paths), batch_size):
@@ -110,12 +165,14 @@ def yolo_inference_node(state: dict) -> dict:
                     cls_name = result.names[cls_id]
                     conf = float(box.conf[0])
                     xyxy = box.xyxy[0].tolist()
+                    xywhn = box.xywhn[0].tolist()
 
                     detections.append({
                         "class_id": cls_id,
                         "class_name": cls_name,
                         "confidence": round(conf, 4),
                         "bbox_xyxy": [round(c, 2) for c in xyxy],
+                        "bbox_xywhn": [round(c, 6) for c in xywhn],
                     })
 
                     if cls_name.lower() in known_names_lower and conf >= conf_thresh:
@@ -124,25 +181,17 @@ def yolo_inference_node(state: dict) -> dict:
             # Fallback Stage 2: Check if this image has a crop in the known_defect_crops registry
             # (Bootstraps filtering for known defects before the model is fully fine-tuned)
             if not is_known:
-                img_stem = img_path.stem
-                known_dir = Path(cfg.KNOWN_DEFECTS_DIR)
-                if known_dir.exists():
-                    for sub in known_dir.iterdir():
-                        if sub.is_dir() and sub.name.lower() in known_names_lower:
-                            for crop_file in sub.iterdir():
-                                if crop_file.is_file() and crop_file.name.startswith(img_stem):
-                                    is_known = True
-                                    log.info(f"Fallback matched known crop for {img_path.name} in registry class '{sub.name}'")
-                                    detections.append({
-                                        "class_id": -99,
-                                        "class_name": sub.name,
-                                        "confidence": 1.0,
-                                        "bbox_xyxy": [0.0, 0.0, 0.0, 0.0],
-                                        "note": "Matched via known defect crops registry"
-                                    })
-                                    break
-                        if is_known:
-                            break
+                matched_class = _match_known_crop(img_path.stem, known_crop_index)
+                if matched_class:
+                    is_known = True
+                    log.info(f"Fallback matched known crop for {img_path.name} in registry class '{matched_class}'")
+                    detections.append({
+                        "class_id": -99,
+                        "class_name": matched_class,
+                        "confidence": 1.0,
+                        "bbox_xyxy": [0.0, 0.0, 0.0, 0.0],
+                        "note": "Matched via known defect crops registry"
+                    })
 
             if is_known:
                 known_paths.append(img_str)
@@ -154,6 +203,8 @@ def yolo_inference_node(state: dict) -> dict:
                 "detections": detections,
                 "classified_as": "known" if is_known else "unknown",
             })
+
+    _save_known_replay(raw_results, known_names_lower)
 
     # Save unknown defect filenames
     unknown_json_path = str(cfg.UNKNOWN_DEFECTS_JSON)

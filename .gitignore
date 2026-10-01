@@ -18,7 +18,6 @@ data/
 # Model artifacts (large binaries — use DVC or releases)
 *.pt
 models/versions/
-models/label_studio/
 
 # Logs & training runs
 logs/

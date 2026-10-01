@@ -28,6 +28,9 @@ def _save_cluster_manifest(
     cohesions: dict[str, float] = None,
     global_icc: float = 0.0,
     global_silhouette: float = 0.0,
+    vars_result: dict | None = None,
+    cluster_fingerprints: dict[int, str] | None = None,
+    inherited_labels: dict[int, str] | None = None,
 ) -> Path:
     """
     Save a manifest JSON:
@@ -43,6 +46,7 @@ def _save_cluster_manifest(
         "vlm_system_prompt": vlm_system_prompt or STATIC_PROMPT,
         "global_icc": round(global_icc, 4),
         "global_silhouette": round(global_silhouette, 4),
+        "vars": vars_result or {},
         "clusters": {}
     }
 
@@ -69,7 +73,9 @@ def _save_cluster_manifest(
         cluster_entry = {
             "cluster_id": int(cluster_id),
             "crop_count": len(images),
-            "defect_name": None,
+            # Pre-labelled when this group matches a fingerprint a human already named
+            "defect_name": (inherited_labels or {}).get(int(cluster_id)),
+            "fingerprint_id": (cluster_fingerprints or {}).get(int(cluster_id)),
             "cohesion": cohesion_val,
             "crops": [],
         }
@@ -91,30 +97,37 @@ def _save_cluster_manifest(
         manifest["clusters"][folder.name] = cluster_entry
 
     manifest_path = cfg.CLUSTERS_DIR / "cluster_manifest.json"
-    from src.utils import load_json
-    # Preserve existing cluster defect_name if it exists in the old manifest
-    if manifest_path.exists():
-        try:
-            old_manifest = load_json(manifest_path)
-            for cname, entry in old_manifest.get("clusters", {}).items():
-                if cname in manifest["clusters"] and entry.get("defect_name"):
-                    manifest["clusters"][cname]["defect_name"] = entry["defect_name"]
-        except Exception:
-            pass
-
+    # NOTE: names are NOT copied over from the previous manifest by folder name:
+    # cluster_000 is re-numbered every run and may be a different defect now.
+    # Stable identity comes from the fingerprint registry (see inherited_labels).
     save_json(manifest, manifest_path)
     log.info(f"Cluster manifest saved to {manifest_path}")
     return manifest_path
+
+
+def _normalize_box(box: list) -> list[float] | None:
+    """
+    VLM box [ymin, xmin, ymax, xmax] (0-1000) → YOLO [cx, cy, w, h] (0-1).
+    Clamps to the image and returns None for degenerate boxes.
+    """
+    if len(box) != 4:
+        return None
+    ymin, xmin, ymax, xmax = (min(max(float(v), 0.0), 1000.0) / 1000.0 for v in box)
+    w, h = xmax - xmin, ymax - ymin
+    if w <= 0.0 or h <= 0.0:
+        return None
+    return [xmin + w / 2, ymin + h / 2, w, h]
 
 
 def manifest_save_node(state: dict) -> dict:
     """
     LangGraph node: save cluster manifest, run ICC annotation, log VLM/run metrics.
     """
-    cluster_folders = state.get("cluster_folders", {})
-    crop_metadata   = state.get("crop_metadata", [])
-    run_id          = state.get("run_id", "unknown_run")
+    cluster_folders   = state.get("cluster_folders", {})
+    crop_metadata     = state.get("crop_metadata", [])
+    run_id            = state.get("run_id", "unknown_run")
     vlm_system_prompt = state.get("vlm_system_prompt")
+    vlm_annotations   = state.get("vlm_annotations", [])
 
     if not cluster_folders:
         log.warning("No clusters to save manifest for")
@@ -229,7 +242,42 @@ def manifest_save_node(state: dict) -> dict:
     except Exception as e:
         log.warning(f"Statistical ICC failed (non-fatal): {e}")
 
-    # ── 2. Save cluster manifest with metrics ────────────────
+    # ── 2. Compute VARS (VLM Annotation Reliability Score) ───
+    vars_result: dict = {}
+    try:
+        from src.utils.vlm_score import compute_vars
+        feature_vectors = state.get("feature_vectors")
+        novel_indices   = state.get("novel_indices", [])
+
+        # Use only the novel-subset feature vectors (same slice used for clustering)
+        fv_for_vars = None
+        if feature_vectors is not None:
+            import numpy as np
+            fv_arr = np.asarray(feature_vectors)
+            if novel_indices:
+                fv_for_vars = fv_arr[novel_indices]
+            else:
+                fv_for_vars = fv_arr
+
+        vars_result = compute_vars(
+            crop_metadata=crop_metadata,
+            vlm_annotations=vlm_annotations,
+            crop_feature_vectors=fv_for_vars,
+        )
+
+        vars_msg = (
+            f"[VARS] VLM Reliability: {vars_result['vars_pct']}% — "
+            f"CDS={vars_result['cds']:.3f}  BQS={vars_result['bqs']:.3f}  DRS={vars_result['drs']:.3f} — "
+            f"{vars_result['interpretation']}"
+        )
+        log.info(vars_msg)
+        LogStream.emit(vars_msg, level="info", source="manifest_save")
+        state["vars_result"] = vars_result
+
+    except Exception as e:
+        log.warning(f"VARS computation failed (non-fatal): {e}")
+
+    # ── 3. Save cluster manifest with metrics ────────────────
     _save_cluster_manifest(
         run_id=run_id,
         cluster_folders=cluster_folders,
@@ -238,29 +286,32 @@ def manifest_save_node(state: dict) -> dict:
         cohesions=cohesions,
         global_icc=global_icc,
         global_silhouette=global_silhouette,
+        vars_result=vars_result,
+        cluster_fingerprints=state.get("cluster_fingerprints"),
+        inherited_labels=state.get("cluster_inherited_labels"),
     )
 
-    # ── 3. Save crop-to-source mapping ───────────────────────
+    # ── 4. Save crop-to-source mapping ───────────────────────
     crop_mapping: dict = {}
+    skipped_boxes = 0
     for meta in crop_metadata:
         crop_name = Path(meta.get("crop_path", "")).stem
-        box = meta.get("box_2d_raw", [])
-        if len(box) == 4:
-            ymin, xmin, ymax, xmax = (v / 1000 for v in box)
-            w, h = xmax - xmin, ymax - ymin
-            bbox_normalized = [xmin + w / 2, ymin + h / 2, w, h]
-        else:
-            bbox_normalized = [0.5, 0.5, 1.0, 1.0]
+        bbox_normalized = _normalize_box(meta.get("box_2d_raw", []))
+        if bbox_normalized is None:
+            skipped_boxes += 1   # no valid box → cannot become a YOLO label
+            continue
         crop_mapping[crop_name] = {
             "source_image": meta.get("source_image", ""),
             "bbox_normalized": bbox_normalized,
         }
+    if skipped_boxes:
+        log.warning(f"{skipped_boxes} crops had no valid bounding box and were left out of the label mapping")
 
     save_json(crop_mapping, cfg.DATA_DIR / "crop_to_source.json")
     log.info(f"Crop-to-source mapping saved to {cfg.DATA_DIR / 'crop_to_source.json'}")
     log.info(f"Manifest saved for {len(cluster_folders)} clusters. Ready for review in dashboard.")
 
-    # ── 4. Log VLM/run metrics ───────────────────────────────
+    # ── 5. Log VLM/run metrics ───────────────────────────────
     if cluster_results:
         try:
             from src.utils.vlm_metrics import log_run_metrics
@@ -271,6 +322,7 @@ def manifest_save_node(state: dict) -> dict:
                 registry_total=state.get("registry_total", 0),
                 run_id=run_id,
                 global_icc=state.get("global_icc"),
+                vars_result=state.get("vars_result"),
             )
         except Exception as e:
             log.warning(f"VLM metrics logging failed (non-fatal): {e}")

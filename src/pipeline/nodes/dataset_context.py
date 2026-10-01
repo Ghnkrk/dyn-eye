@@ -25,16 +25,52 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
 import config as cfg
 from src.utils import get_logger
+from src.utils.llm import chat, llm_available, LLMUnavailable
 
 log = get_logger("dataset_context")
 
 
 # ── Pre-annotation context builder ─────────────────────────
 
+# ── Pre-annotation context builder ─────────────────────────
+
+def _load_previous_vars_feedback() -> dict:
+    """Read VARS metrics from the last run to guide dynamic prompt optimization."""
+    manifest_path = cfg.CLUSTERS_DIR / "cluster_manifest.json"
+    if manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            vars_data = manifest.get("vars", {})
+            if vars_data and "vars_score" in vars_data:
+                return vars_data
+        except Exception as e:
+            log.warning(f"Failed to load VARS from cluster manifest: {e}")
+
+    metrics_path = cfg.VLM_METRICS_PATH
+    if metrics_path.exists():
+        try:
+            history = json.loads(metrics_path.read_text(encoding="utf-8"))
+            if isinstance(history, list) and history:
+                last = history[-1]
+                if last.get("vars_score") is not None:
+                    return {
+                        "vars_score": last.get("vars_score"),
+                        "vars_pct": last.get("vars_pct"),
+                        "cds": last.get("vars_cds"),
+                        "bqs": last.get("vars_bqs"),
+                        "drs": last.get("vars_drs"),
+                        "interpretation": last.get("vars_interpretation"),
+                    }
+        except Exception:
+            pass
+
+    return {}
+
+
 def _build_pre_annotation_context(state: dict) -> dict:
     """
     Build a context snapshot from what is known BEFORE VLM annotation starts.
-    Only uses state available after yolo_inference.
+    Includes previous VARS sub-scores for closed-loop prompt optimization.
     """
     known_names = state.get("known_defect_names", [])
     unknown_paths = state.get("unknown_image_paths", [])
@@ -44,6 +80,20 @@ def _build_pre_annotation_context(state: dict) -> dict:
     unknown_count = len(unknown_paths) if unknown_paths else 0
     novelty_ratio = round(unknown_count / total_images, 3) if total_images > 0 else 0.0
 
+    vars_feedback = _load_previous_vars_feedback()
+    directives: list[str] = []
+    if vars_feedback:
+        cds = vars_feedback.get("cds")
+        bqs = vars_feedback.get("bqs")
+        drs = vars_feedback.get("drs")
+
+        if bqs is not None and bqs < 0.80:
+            directives.append("BQS_LOW: Bounding box quality in previous run was low. Require tight 5-8% padding and strictly forbid overzoomed boxes covering >70% of the image.")
+        if cds is not None and cds < 0.70:
+            directives.append("CDS_LOW: Previous run crops lacked discriminability from background. Instruct VLM to strictly distinguish between normal surface grain/reflections and actual defects.")
+        if drs is not None and drs < 0.60:
+            directives.append("DRS_LOW: Detection rate was imbalanced. Instruct higher visual conviction standards before flagging anomalies.")
+
     return {
         "inspection_domain": cfg.INSPECTION_DOMAIN,
         "known_class_names": known_names,
@@ -51,8 +101,9 @@ def _build_pre_annotation_context(state: dict) -> dict:
         "total_input_images": total_images,
         "unknown_image_count": unknown_count,
         "novelty_ratio": novelty_ratio,
-        # Signal: high novelty → Gemini should explore new label names
         "high_novelty": novelty_ratio > 0.5,
+        "previous_vars_metrics": vars_feedback if vars_feedback else None,
+        "vars_corrective_directives": directives if directives else None,
     }
 
 
@@ -64,7 +115,7 @@ def _context_hash(context: dict) -> str:
 
 # ── Groq meta-prompt ────────────────────────────────────────
 
-_GROQ_SYSTEM = """You are a prompt engineer for an industrial vision AI system.
+_PROMPT_WRITER_SYSTEM = """You are a prompt engineer for an industrial vision AI system.
 Your task is to write a DETECTION system prompt for a Gemini VLM.
 
 The VLM receives raw inspection images and must return tight bounding-box
@@ -78,7 +129,13 @@ Write a Gemini system prompt that:
    defects from near-misses with existing classes.
 3. If high_novelty is true or novelty_ratio > 0.5, tells Gemini to coin a
    NEW descriptive label rather than forcing a known class fit.
-4. Always requires this exact JSON output:
+4. CLOSED-LOOP VARS OPTIMIZATION:
+   If previous_vars_metrics or vars_corrective_directives are present in context:
+   - Incorporate explicit rules targeting those corrective directives.
+   - For BQS_LOW: Enforce tight 5-8% box margins, sharp clarity, and forbid whole-image boxes.
+   - For CDS_LOW: Explicitly instruct Gemini to ignore normal background grain, lighting gradients, or surface finish lines.
+   - For DRS_LOW: Enforce higher conviction before marking anomalies_found=true.
+5. Always requires this exact JSON output:
    {
      "anomalies_found": bool,
      "findings": [
@@ -92,7 +149,7 @@ Write a Gemini system prompt that:
      ]
    }
    box_2d values are in 0-1000 scale relative to image dimensions.
-5. Instructs drawing TIGHT boxes (5-8% margin), covering structural
+6. Instructs drawing TIGHT boxes (5-8% margin), covering structural
    violations, surface defects, and tonal/material anomalies.
 
 OUTPUT: Return ONLY the Gemini system prompt text. No explanation, no markdown fences."""
@@ -100,10 +157,10 @@ OUTPUT: Return ONLY the Gemini system prompt text. No explanation, no markdown f
 
 def _generate_vlm_prompt_via_groq(context: dict, use_cache: bool = True) -> str | None:
     """
-    Call Groq LLM to generate a tailored Gemini VLM detection prompt.
+    Call the LLM to generate a tailored Gemini VLM detection prompt.
     Returns None on any failure — pipeline always falls back to static prompt.
     """
-    if not cfg.GROQ_API_KEY:
+    if not llm_available():
         log.info("No GROQ_API_KEY — skipping dynamic prompt generation")
         return None
 
@@ -119,19 +176,12 @@ def _generate_vlm_prompt_via_groq(context: dict, use_cache: bool = True) -> str 
             pass
 
     try:
-        from groq import Groq
-
-        client = Groq(api_key=cfg.GROQ_API_KEY)
-        response = client.chat.completions.create(
-            model=cfg.GROQ_ADVISOR_MODEL,
-            messages=[
-                {"role": "system", "content": _GROQ_SYSTEM},
-                {"role": "user", "content": json.dumps(context, indent=2)},
-            ],
+        prompt_text = chat(
+            json.dumps(context, indent=2),
+            system=_PROMPT_WRITER_SYSTEM,
             temperature=0.3,
             max_tokens=1500,
         )
-        prompt_text = response.choices[0].message.content.strip()
 
         if not prompt_text or len(prompt_text) < 50:
             log.warning("Groq returned empty/short prompt — using static fallback")
@@ -153,8 +203,8 @@ def _generate_vlm_prompt_via_groq(context: dict, use_cache: bool = True) -> str 
         )
         return prompt_text
 
-    except ImportError:
-        log.warning("groq package not installed — using static VLM prompt")
+    except LLMUnavailable as e:
+        log.warning(f"{e} — using static VLM prompt")
         return None
     except Exception as e:
         log.warning(f"Groq prompt generation failed: {e}")
@@ -181,6 +231,10 @@ def dataset_context_node(state: dict) -> dict:
         state["vlm_system_prompt"]   — Groq-generated prompt (if successful)
     """
     from src.utils import LogStream
+
+    if not cfg.USE_DYNAMIC_PROMPT:
+        log.info("Dynamic VLM prompt disabled (USE_DYNAMIC_PROMPT=0) — using static prompt.")
+        return {"dataset_context": {}, "_cached": True}
 
     # Build pre-annotation context
     try:

@@ -1,7 +1,7 @@
 """
-LLM Training Advisor — Gemini-Powered
+LLM Training Advisor
 
-Uses the Gemini LLM to analyze dataset metadata and produce
+Uses the configured LLM (Groq, cfg.LLM_MODEL_ID) to analyze dataset metadata and produce
 intelligent training hyperparameter recommendations.
 
 Responsibilities:
@@ -18,6 +18,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 import config as cfg
 from src.utils import get_logger
+from src.utils.llm import chat_json, llm_available
 
 log = get_logger("llm_advisor")
 
@@ -96,7 +97,7 @@ def collect_dataset_metadata() -> dict:
 
 def get_training_recommendation(metadata: dict | None = None) -> dict:
     """
-    Query the Gemini LLM for training recommendations.
+    Query the configured LLM (Groq) for training recommendations.
 
     Returns:
         {
@@ -152,29 +153,18 @@ def get_training_recommendation(metadata: dict | None = None) -> dict:
 
     prompt = _build_prompt(metadata)
 
-    # 1. Try Groq
-    if cfg.GROQ_API_KEY:
+    # 1. Ask the LLM (Groq)
+    if llm_available():
         try:
-            from groq import Groq
-            msg = f"[LLM Advisor] Querying Groq LLM ({cfg.GROQ_ADVISOR_MODEL})..."
+            msg = f"[LLM Advisor] Querying LLM ({cfg.LLM_MODEL_ID})..."
             log.info(msg)
             LogStream.emit(msg, level="info", source="llm_advisor")
 
-            client = Groq(api_key=cfg.GROQ_API_KEY)
-            response = client.chat.completions.create(
-                model=cfg.GROQ_ADVISOR_MODEL,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=cfg.LLM_ADVISOR_TEMPERATURE,
-                response_format={"type": "json_object"}
-            )
-            raw = response.choices[0].message.content.strip()
-            recommendation = json.loads(raw)
+            recommendation = chat_json(prompt)
             recommendation = _validate_recommendation(recommendation, metadata)
 
             LogStream.emit(
-                f"[LLM Advisor] Groq Decision received successfully:\n"
+                f"[LLM Advisor] Decision received successfully:\n"
                 f"  - should_train: {recommendation['should_train']}\n"
                 f"  - reason: {recommendation.get('reason', '')}\n"
                 f"  - config (hyperparameters):\n"
@@ -190,53 +180,11 @@ def get_training_recommendation(metadata: dict | None = None) -> dict:
             )
             return recommendation
         except Exception as e:
-            msg_err = f"[LLM Advisor] Groq query failed: {e}. Trying Gemini..."
+            msg_err = f"[LLM Advisor] LLM query failed: {e}. Using heuristic fallback..."
             log.warning(msg_err)
             LogStream.emit(msg_err, level="warning", source="llm_advisor")
 
-    # 2. Try Gemini
-    if cfg.GEMINI_API_KEY:
-        try:
-            from google import genai
-            msg = f"[LLM Advisor] Querying Gemini LLM ({cfg.LLM_ADVISOR_MODEL})..."
-            log.info(msg)
-            LogStream.emit(msg, level="info", source="llm_advisor")
-
-            client = genai.Client(api_key=cfg.GEMINI_API_KEY)
-            response = client.models.generate_content(
-                model=cfg.LLM_ADVISOR_MODEL,
-                contents=prompt,
-                config={
-                    "temperature": cfg.LLM_ADVISOR_TEMPERATURE,
-                    "response_mime_type": "application/json",
-                },
-            )
-            raw = response.text.strip()
-            recommendation = json.loads(raw)
-            recommendation = _validate_recommendation(recommendation, metadata)
-
-            LogStream.emit(
-                f"[LLM Advisor] Gemini Decision received successfully:\n"
-                f"  - should_train: {recommendation['should_train']}\n"
-                f"  - reason: {recommendation.get('reason', '')}\n"
-                f"  - config (hyperparameters):\n"
-                f"      * epochs: {recommendation['config'].get('epochs', 1)} (Demo standard)\n"
-                f"      * batch_size: {recommendation['config'].get('batch', 8)}\n"
-                f"      * imgsz: {recommendation['config'].get('imgsz', 640)}\n"
-                f"      * learning_rate (lr0): {recommendation['config'].get('lr0', 0.01)}\n"
-                f"      * optimizer: {recommendation['config'].get('optimizer', 'AdamW')}\n"
-                f"      * backbone_freeze: {recommendation['config'].get('freeze', 10)}\n"
-                f"  - augmentation_notes: {recommendation.get('augmentation_notes', 'N/A')}",
-                level="info",
-                source="llm_advisor"
-            )
-            return recommendation
-        except Exception as e:
-            msg_err = f"[LLM Advisor] Gemini query failed: {e}. Trying heuristic fallback..."
-            log.warning(msg_err)
-            LogStream.emit(msg_err, level="warning", source="llm_advisor")
-
-    # 3. Heuristic Fallback
+    # 2. Heuristic Fallback (no key, or LLM call failed)
     fallback_rec = _heuristic_fallback(metadata)
     LogStream.emit(
         f"[LLM Advisor] Heuristic Fallback recommendation:\n"

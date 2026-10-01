@@ -38,6 +38,13 @@ function toast(msg, type = 'info') {
     setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 250); }, 3500);
 }
 
+// ── VARS toggle ────────────────────────────────────────────
+function toggleVarsDetail() {
+    const d = document.getElementById('vars-detail');
+    if (!d) return;
+    d.style.display = d.style.display === 'none' ? 'flex' : 'none';
+}
+
 // ── API Helpers ──────────────────────────────────────────────
 async function get(path) {
     const r = await fetch(`${API}${path}`);
@@ -533,6 +540,28 @@ async function loadStats() {
             document.getElementById('m-global-silhouette').textContent = (clusters.global_silhouette || 0).toFixed(4);
             document.getElementById('m-mean-cohesion').textContent = (clusters.mean_cohesion || 0).toFixed(4);
             metricsEl.style.display = 'flex';
+
+            // ── VARS (VLM Reliability Score) ────────────────
+            try {
+                const varsData = await get('/api/vlm/score');
+                const varsPill  = document.getElementById('m-vars');
+                const varsDetail = document.getElementById('vars-detail');
+                if (varsData.available && varsPill) {
+                    const pct = varsData.vars_pct || 0;
+                    const colour = pct >= 80 ? '#22c55e' : pct >= 60 ? '#f59e0b' : '#ef4444';
+                    varsPill.textContent = `${pct}%`;
+                    varsPill.style.color = colour;
+                    document.getElementById('m-vars-cds').textContent  = ((varsData.cds || 0) * 100).toFixed(1) + '%';
+                    document.getElementById('m-vars-bqs').textContent  = ((varsData.bqs || 0) * 100).toFixed(1) + '%';
+                    document.getElementById('m-vars-drs').textContent  = ((varsData.drs || 0) * 100).toFixed(1) + '%';
+                    const interpEl = document.getElementById('m-vars-interp');
+                    if (interpEl) interpEl.textContent = varsData.interpretation || '';
+                } else if (varsPill) {
+                    varsPill.textContent = 'N/A';
+                }
+            } catch (_) {
+                // VARS not yet available — leave as N/A silently
+            }
         } else if (metricsEl) {
             metricsEl.style.display = 'none';
         }

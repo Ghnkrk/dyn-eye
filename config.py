@@ -47,6 +47,13 @@ for d in [
 # YOLO SETTINGS
 # ============================================================
 YOLO_CONFIDENCE_THRESHOLD = 0.30
+
+# Replay: known-class images + the CURRENT model's detections are mixed into the
+# fine-tuning set as pseudo-labels so old classes are not forgotten when the
+# exported dataset otherwise contains only newly named defects.
+KNOWN_REPLAY_JSON = DATA_DIR / "known_replay.json"
+REPLAY_MIN_CONF = 0.50        # only confident detections become pseudo-labels
+REPLAY_MAX_IMAGES = 150       # cap so replay never drowns the new classes
 KNOWN_DEFECTS_JSON = DATA_DIR / "known_defects.json"
 
 # Dynamic — reads from data/known_defects.json at access time.
@@ -65,23 +72,26 @@ def _load_known_names() -> list[str]:
 KNOWN_DEFECT_NAMES: list[str] = _load_known_names()
 
 # ============================================================
-# VLM SETTINGS (Gemma 4-31b-it via Google GenAI)
+# LLM / VLM SETTINGS
 # ============================================================
-GEMINI_API_KEY = os.environ.get(
-    "GEMINI_API_KEY",
-    "AIzaSyCOTORQ_xn-j-OffOrNibKtEGEGMf7_Zm0",
-).strip("'\" ")
-os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY
+# Secrets come ONLY from the environment / .env (never hardcode defaults here).
+def _env(name: str, default: str = "") -> str:
+    return os.environ.get(name, default).strip().strip("'\" ")
 
-GROQ_API_KEY = os.environ.get(
-    "GROQ_API_KEY",
-    "",
-).strip("'\" ")
-os.environ["GROQ_API_KEY"] = GROQ_API_KEY
-GROQ_ADVISOR_MODEL = "llama-3.3-70b-versatile"
+GEMINI_API_KEY = _env("GEMINI_API_KEY")   # VLM only (Google GenAI)
+GROQ_API_KEY = _env("GROQ_API_KEY")       # every text-LLM call (Groq)
 
-VLM_MODEL_ID = "gemma-4-31b-it"
+# ── All model IDs live here (each overridable via env var) ──
+# When a provider decommissions a model, change it HERE ONLY.
+#   VLM_MODEL_ID   Google GenAI — bbox annotation of unknown images (the only Gemini use)
+#   LLM_MODEL_ID   Groq         — training advisor, auto-retrain decision, dynamic prompt writer
+VLM_MODEL_ID = _env("VLM_MODEL_ID", "gemma-4-31b-it")
+LLM_MODEL_ID = _env("LLM_MODEL_ID", "qwen/qwen3.8-27b")
+LLM_TEMPERATURE = 0.2
 VLM_TEMPERATURE = 0.1
+# Per-image result cache: skip the VLM for images already annotated with the same prompt+model
+VLM_IMAGE_CACHE = _env("VLM_IMAGE_CACHE", "1").lower() in ("1", "true", "yes")
+VLM_IMAGE_CACHE_PATH = DATA_DIR / "vlm_image_cache.json"
 VLM_SLEEP_BETWEEN = 4.5
 VLM_MAX_RETRIES = 5
 VLM_BACKOFF_FACTOR = 2
@@ -121,10 +131,6 @@ UMAP_RANDOM_STATE = 42
 UMAP_BATCH_THRESHOLD = 30    # Activate UMAP earlier (was 50)
 
 # ============================================================
-# (Label Studio removed — cluster editing is done in the dashboard)
-# ============================================================
-
-# ============================================================
 # MLFLOW SETTINGS
 # ============================================================
 _tracking_uri = os.environ.get("MLFLOW_TRACKING_URI")
@@ -146,15 +152,19 @@ DASHBOARD_HOST = "0.0.0.0"
 DASHBOARD_PORT = 8501
 
 # ============================================================
-# LLM TRAINING ADVISOR (Gemini)
+# LLM TRAINING ADVISOR (model + temperature: see LLM_* above)
 # ============================================================
-LLM_ADVISOR_MODEL = "gemini-2.0-flash"
-LLM_ADVISOR_TEMPERATURE = 0.2
 LLM_MIN_CROPS_PER_CLASS = 10   # Minimum crops per class before LLM considers training
 
 # ============================================================
 # YOLO TRAINING DEFAULTS
+# Demo default: 1 epoch. Use 30-100 for a real fine-tune.
 YOLO_TRAIN_EPOCHS = 1
+# Auto-deploy gate: a trained model below this mAP50 is registered but NOT deployed.
+# 0.0 = always deploy (legacy behaviour). Set e.g. 0.5 in production.
+YOLO_MIN_DEPLOY_MAP50 = float(os.environ.get("YOLO_MIN_DEPLOY_MAP50", "0.0"))
+# Classes the original base model was trained on (used to seed the model registry)
+BASELINE_CLASSES = ["inclusion", "oil_spot", "punching_hole", "silk_spot", "water_spot", "welding_line"]
 YOLO_TRAIN_IMGSZ = 640
 YOLO_TRAIN_BATCH = 16
 
@@ -172,7 +182,11 @@ YOLO_TRAIN_FREEZE = None
 # VLM DYNAMIC PROMPT SETTINGS (Part 2)
 # ============================================================
 VLM_PROMPT_CACHE_PATH = DATA_DIR / "vlm_prompt_cache.json"
-INSPECTION_DOMAIN = os.environ.get("INSPECTION_DOMAIN", "unknown")
+INSPECTION_DOMAIN = os.environ.get("INSPECTION_DOMAIN", "metallic")
+# Off by default: single-domain (metallic) datasets are served well by the static
+# prompt, and an LLM-rewritten prompt adds run-to-run variance + a Groq dependency.
+# Set USE_DYNAMIC_PROMPT=1 when onboarding a new inspection domain.
+USE_DYNAMIC_PROMPT = os.environ.get("USE_DYNAMIC_PROMPT", "0").strip().lower() in ("1", "true", "yes")
 
 # ============================================================
 # VLM METRICS (Part 3)

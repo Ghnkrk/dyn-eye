@@ -31,11 +31,18 @@ class FAISSIndexManager:
     """
 
     def __init__(self, extractor: DinoV2Extractor | None = None):
-        self.extractor = extractor or DinoV2Extractor()
+        self._extractor = extractor
         self.index: faiss.IndexFlatL2 | None = None
         self.labels: list[str] = []  # Class label per vector in index
         self.index_path = str(cfg.FAISS_INDEX_FILE)
         self.labels_path = str(cfg.FAISS_LABELS_FILE)
+
+    @property
+    def extractor(self) -> DinoV2Extractor:
+        """Built lazily: querying an existing index never needs the DINOv2 model."""
+        if self._extractor is None:
+            self._extractor = DinoV2Extractor()
+        return self._extractor
 
     # ── Setup Mode ───────────────────────────────────────────
     def setup(

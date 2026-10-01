@@ -49,7 +49,7 @@ Input Images ──► YOLO Inference ──► Known? ──► SKIP (already t
 | **Novelty Detection** | FAISS IndexFlatL2 | Filters known-looking crops based on registry embeddings |
 | **Clustering** | HDBSCAN (auto-tuned) | Groups remaining novel anomaly crops into coherent clusters |
 | **VLM Annotation** | Google Gemini (`gemma-4-31b-it`) | Detects and annotates visual anomaly traits within crops |
-| **LLM Advisor & Prompting** | Groq (`llama-3.3-70b-versatile`) | Generates dynamic VLM prompts and advises on retraining readiness |
+| **LLM Advisor** | Groq (`qwen/qwen3.8-27b`) | Advises on retraining readiness / hyperparameters and decides when to auto-retrain; optionally writes dynamic VLM prompts |
 | **Cluster Quality Metric** | Statistical ICC (one-way ANOVA) | Measures cluster cohesion and separation using DINOv2 embeddings |
 | **Pipeline Orchestration** | LangGraph (stateful DAG) | Coordinates discovery and retraining runs |
 | **Experiment Tracking** | MLflow | Tracks model performance, cluster quality, and VLM run metrics |
@@ -105,7 +105,7 @@ Measured on a single representative run against a real industrial inspection dat
 ## Repository Structure
 
 ```
-Protosem2/
+dyn-eye/
 ├── config.py                   # Central config — paths, thresholds, and VLM settings
 ├── main.py                     # CLI entry point (dashboard / discover / retrain / setup-faiss)
 ├── pyproject.toml              # uv-managed dependencies
@@ -188,8 +188,8 @@ Protosem2/
 ### 1. Clone and enter the repo
 
 ```bash
-git clone <your-repo-url>
-cd Protosem2
+git clone https://github.com/Ghnkrk/dyn-eye.git
+cd dyn-eye
 ```
 
 ### 2. Install dependencies
@@ -201,14 +201,18 @@ uv sync
 
 ### 3. Create your `.env` file
 
+Copy `.env.example` to `.env` and fill in your keys (`.env` is git-ignored; keys are never read from source code):
+
 ```env
 GEMINI_API_KEY=your_google_gemini_api_key_here
 GROQ_API_KEY=your_groq_api_key_here
 ```
 
 **Keys needed:**
-- **Gemini** → VLM anomaly annotation (`gemma-4-31b-it`)
-- **Groq** → Dynamic VLM prompt generation + retraining advisor
+- **Gemini** → VLM anomaly annotation only (`gemma-4-31b-it`)
+- **Groq** → every text-LLM call (`qwen/qwen3.8-27b`): training advisor, auto-retrain decision, optional dynamic prompt
+
+All model IDs are defined in `config.py` (`VLM_MODEL_ID`, `LLM_MODEL_ID`) and can be overridden from `.env`.
 
 ### 4. Activate the environment
 
@@ -253,6 +257,12 @@ The folder name becomes the defect class label. The FAISS index is built automat
 | Variable | Default | Purpose |
 |---|---|---|
 | `YOLO_CONFIDENCE_THRESHOLD` | `0.30` | Min YOLO confidence to count a detection |
+| `LLM_MODEL_ID` | `qwen/qwen3.8-27b` | Groq model for every text-LLM call (env-overridable) |
+| `VLM_MODEL_ID` | `gemma-4-31b-it` | Google GenAI model for bbox annotation (env-overridable) |
+| `VLM_IMAGE_CACHE` | `1` | Reuse VLM results per image (content + prompt + model); makes runs resumable and boxes stable |
+| `USE_DYNAMIC_PROMPT` | `0` | Opt-in LLM-written VLM prompt (off for single-domain metallic runs) |
+| `YOLO_MIN_DEPLOY_MAP50` | `0.0` | Trained models below this mAP50 are registered but **not** deployed |
+| `REPLAY_MIN_CONF` / `REPLAY_MAX_IMAGES` | `0.5` / `150` | Known-class images replayed as pseudo-labels during fine-tuning |
 | `FAISS_NOVELTY_THRESHOLD` | `0.35` | L2 distance above which a crop is flagged as novel |
 | `HDBSCAN_MIN_CLUSTER_SIZE` | `4` | Min crops required to form a cluster |
 | `HDBSCAN_MIN_SAMPLES` | `2` | HDBSCAN core-point density parameter |
@@ -325,7 +335,7 @@ Compares embeddings against the indexed known-defect vectors. Crops closer than 
 Groups the remaining novel crops using HDBSCAN, with an automated DBCV grid search to select the optimal `min_cluster_size` and `min_samples` per run. Produces named cluster folders and a fingerprint registry for run-to-run cluster identity tracking.
 
 ### 6. Dynamic VLM Prompting & Annotation (`dataset_context.py` + `vlm_annotation.py`)
-- **Dynamic Prompting**: Groq (`llama-3.3-70b-versatile`) generates a domain-aware system prompt from the run context (novelty ratio, known classes, batch size). Falls back to a static default prompt if Groq is unavailable.
+- **Dynamic Prompting** (opt-in, `USE_DYNAMIC_PROMPT=1`; off by default for single-domain metallic runs): Groq (`qwen/qwen3.8-27b`) generates a domain-aware system prompt from the run context (novelty ratio, known classes, batch size). Falls back to a static default prompt if Groq is unavailable.
 - **VLM Annotation**: Gemma (`gemma-4-31b-it`) receives individual crops and the system prompt, returning structured bounding box annotations and physical trait descriptions. The VLM performs **detection and annotation only** — it does not assign final defect names.
 - **Rate-limit resilience**: 4.5 s sleep between calls; 503/overload errors trigger a linear-exponential backoff scaling up to 24 s across retries.
 
@@ -392,3 +402,15 @@ uv run python main.py dashboard
 
 ---
 *DYN-EYE — Autonomous Anomaly Detection & Self-Learning Pipeline*
+
+
+---
+
+## Backend Behaviour Notes
+
+- **Stable cluster identity.** Folder names (`cluster_000`) are renumbered every run. Each cluster instead gets a *fingerprint* (`data/clusters/cluster_registry.json`); naming a cluster in the dashboard stores the name on its fingerprint, so the same visual group is pre-labelled in later runs (one-to-one matching, cosine distance < `CLUSTER_MATCH_THRESHOLD`).
+- **Fail-fast pipeline.** Discovery stops with a clear message when YOLO errors/finds no unknown images, the VLM mostly fails, or no crops/novel crops remain. Only one discovery run and one retraining run can execute at a time.
+- **Safe retraining export.** Labels are rewritten (never appended) from de-duplicated boxes, a deterministic ~20% val split is created, and confident detections on known images are replayed as pseudo-labels so old classes are not forgotten.
+- **Deploy gate.** Training never overwrites the live `models/best.pt`; only the deploy step (after the `YOLO_MIN_DEPLOY_MAP50` check) does. The known-defect registry and FAISS index are updated only after a real deployment, and named crops are promoted into `data/known_defect_crops/` so the next run recognises them.
+- **Autonomous loop state** lives in `data/orchestrator_state.json`; it only acts when named clusters or cluster sizes change.
+- **Tests:** `uv run pytest` (pure-logic suite, no GPU or API keys needed).

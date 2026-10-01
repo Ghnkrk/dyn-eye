@@ -309,7 +309,7 @@ async def system_reset_all(req: ResetRequest = None):
             LogStream.emit("Initial YOLO model backup not found, keeping active model", level="warning", source="system")
 
         # 2. Reset models registry.json and register v1_initial
-        initial_classes = ["inclusion", "oil_spot", "punching_hole", "silk_spot", "water_spot", "welding_line"]
+        initial_classes = list(cfg.BASELINE_CLASSES)
         
         registry_file = cfg.MODELS_DIR / "registry.json"
         registry_data = {
@@ -338,7 +338,7 @@ async def system_reset_all(req: ResetRequest = None):
                 "original_path": str(initial_model),
                 "timestamp": ts,
                 "created_at": datetime.now(timezone.utc).isoformat(),
-                "metrics": {"mAP50": 0.95, "precision": 0.92, "recall": 0.94}, # Dummy metrics for initial
+                "metrics": {},  # unknown for the imported baseline — never fabricate
                 "training_config": {},
                 "source": "factory_reset",
                 "notes": "Original 6-class YOLOv8 base model",
@@ -354,7 +354,7 @@ async def system_reset_all(req: ResetRequest = None):
         LogStream.emit("Model registry cleared and v1_initial registered", level="info", source="system")
 
         # 4. Reset known_defects.json to 6 initial classes
-        initial_classes = ["inclusion", "oil_spot", "punching_hole", "silk_spot", "water_spot", "welding_line"]
+        initial_classes = list(cfg.BASELINE_CLASSES)
         reg_data = {
             "defect_classes": initial_classes,
             "version": 1,
@@ -511,6 +511,26 @@ async def list_runs():
         except Exception:
             results.append({"run_id": run_id, "steps": [], "summary": {}})
     return JSONResponse(results)
+
+
+
+@app.get("/api/vlm/score")
+async def get_vlm_score():
+    """
+    Return the latest VLM Annotation Reliability Score (VARS) from the
+    cluster manifest.  Provides full breakdown: vars_score, CDS, BQS, DRS.
+    """
+    manifest_path = cfg.CLUSTERS_DIR / "cluster_manifest.json"
+    if not manifest_path.exists():
+        return JSONResponse({"available": False, "reason": "No manifest found — run discovery pipeline first."})
+    try:
+        manifest = load_json(manifest_path)
+        vars_data = manifest.get("vars", {})
+        if not vars_data:
+            return JSONResponse({"available": False, "reason": "VARS not yet computed in this run."})
+        return JSONResponse({"available": True, **vars_data})
+    except Exception as e:
+        raise HTTPException(500, f"Failed to read VLM score: {e}")
 
 
 @app.post("/api/images/upload")
@@ -906,6 +926,9 @@ async def name_clusters(req: ClusterNamingRequest):
     for cluster_name, defect_name in req.names.items():
         if cluster_name in manifest.get("clusters", {}):
             manifest["clusters"][cluster_name]["defect_name"] = defect_name
+            # Persist the name on the cluster's fingerprint so future runs pre-label it
+            from src.features import cluster_registry as creg
+            creg.set_label(manifest["clusters"][cluster_name].get("fingerprint_id"), defect_name)
             updated.append(cluster_name)
             log.info(f"Named cluster '{cluster_name}' → '{defect_name}'")
 
@@ -1000,6 +1023,8 @@ async def merge_clusters(req: MergeClustersRequest):
     # Apply merged label if provided
     if req.merged_label:
         dst_entry["defect_name"] = req.merged_label
+        from src.features import cluster_registry as creg
+        creg.set_label(dst_entry.get("fingerprint_id"), req.merged_label)
 
     # ── Remove source cluster ──────────────────────────────────
     clusters.pop(src, None)

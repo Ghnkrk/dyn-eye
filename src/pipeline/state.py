@@ -54,6 +54,8 @@ class PipelineState(TypedDict, total=False):
     cluster_folders: dict[int, str]      # cluster_id → folder path
     num_clusters: int
     cluster_registry: dict               # Loaded cluster fingerprint registry
+    cluster_fingerprints: dict[int, str] # cluster_id → stable fingerprint id
+    cluster_inherited_labels: dict[int, str]  # cluster_id → label inherited from registry
     cluster_tuned_params: dict           # Best (min_cluster_size, min_samples) from DBCV grid search
     unassigned_crop_paths: list[str]     # Noise crops too far from any centroid
     dbcv_score: float                    # DBCV validity index of final clustering

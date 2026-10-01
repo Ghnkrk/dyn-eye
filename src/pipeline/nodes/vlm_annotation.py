@@ -4,8 +4,8 @@ Node 2 / 7 — VLM Annotation (Sequential, one image at a time)
 Sends each unknown defect image to Gemma 4-31b-it via Google GenAI
 for bounding-box detection.
 
-Part 2 enhancement: reads dynamic VLM prompt from state if available.
-Part 3 enhancement: multi-sample ICC scoring per cluster + metrics logging.
+Reads the VLM prompt from state if a dynamic one exists, else the static prompt.
+Results are cached per image (content + prompt + model) so runs resume and are stable.
 """
 from __future__ import annotations
 
@@ -78,6 +78,101 @@ Return ONLY the structured JSON payload.
 """
 
 
+# ── Post-processing Box Merging (NMS / Overlap Consolidation) ──
+
+def _compute_box_overlap(boxA: list[int], boxB: list[int]) -> tuple[float, float]:
+    """
+    Returns (iou, ios) for two boxes [y1, x1, y2, x2] in 0-1000 scale.
+    ios = intersection area / area of smaller box (detects nested boxes)
+    """
+    y1_A, x1_A, y2_A, x2_A = boxA
+    y1_B, x1_B, y2_B, x2_B = boxB
+
+    inter_y1 = max(y1_A, y1_B)
+    inter_x1 = max(x1_A, x1_B)
+    inter_y2 = min(y2_A, y2_B)
+    inter_x2 = min(x2_A, x2_B)
+
+    if inter_y1 >= inter_y2 or inter_x1 >= inter_x2:
+        return 0.0, 0.0
+
+    inter_area = (inter_y2 - inter_y1) * (inter_x2 - inter_x1)
+    areaA = max(1, (y2_A - y1_A) * (x2_A - x1_A))
+    areaB = max(1, (y2_B - y1_B) * (x2_B - x1_B))
+    union_area = areaA + areaB - inter_area
+
+    iou = inter_area / union_area
+    ios = inter_area / min(areaA, areaB)
+    return iou, ios
+
+
+def _merge_overlapping_boxes(
+    findings: list[dict],
+    iou_thresh: float = 0.30,
+    ios_thresh: float = 0.50,
+) -> list[dict]:
+    """
+    Post-processing: merge overlapping or nested bounding boxes in findings.
+    Combines overlapping boxes into their bounding envelope [min_y, min_x, max_y, max_x].
+    """
+    if not findings or len(findings) <= 1:
+        return findings
+
+    merged = [f.copy() for f in findings]
+    changed = True
+
+    while changed:
+        changed = False
+        new_merged = []
+        skip_indices = set()
+
+        for i in range(len(merged)):
+            if i in skip_indices:
+                continue
+
+            current = merged[i]
+            boxA = current.get("box_2d", [])
+
+            for j in range(i + 1, len(merged)):
+                if j in skip_indices:
+                    continue
+
+                candidate = merged[j]
+                boxB = candidate.get("box_2d", [])
+
+                if len(boxA) == 4 and len(boxB) == 4:
+                    iou, ios = _compute_box_overlap(boxA, boxB)
+
+                    if iou >= iou_thresh or ios >= ios_thresh:
+                        # Merge boxes into bounding envelope
+                        envelope = [
+                            min(boxA[0], boxB[0]),
+                            min(boxA[1], boxB[1]),
+                            max(boxA[2], boxB[2]),
+                            max(boxA[3], boxB[3]),
+                        ]
+                        
+                        # Combine physical traits if distinct
+                        traitA = current.get("physical_traits", "")
+                        traitB = candidate.get("physical_traits", "")
+                        combined_traits = traitA
+                        if traitB and traitB.lower() not in traitA.lower():
+                            combined_traits = f"{traitA}; {traitB}"
+
+                        current = {
+                            "box_2d": envelope,
+                            "physical_traits": combined_traits,
+                        }
+                        skip_indices.add(j)
+                        changed = True
+
+            new_merged.append(current)
+
+        merged = new_merged
+
+    return merged
+
+
 def _annotate_single_image(
     client: genai.Client,
     config: types.GenerateContentConfig,
@@ -86,7 +181,7 @@ def _annotate_single_image(
 ) -> dict:
     """
     Send a single image to VLM and return annotation dict.
-    Includes retry logic with exponential backoff.
+    Includes retry logic with exponential backoff and post-processing box merging.
     """
     f_name = Path(image_path).name
     img = Image.open(image_path)
@@ -100,25 +195,32 @@ def _annotate_single_image(
             )
             data = json.loads(response.text)
 
-            findings = []
+            raw_findings = []
             if data.get("anomalies_found"):
                 for f in data.get("findings", []):
                     box = f.get("box_2d", [])
                     if len(box) == 4:
-                        findings.append({
+                        raw_findings.append({
                             "box_2d": box,
                             "physical_traits": f.get("physical_traits", ""),
                         })
 
+            # Post-processing: merge overlapping bounding boxes
+            merged_findings = _merge_overlapping_boxes(raw_findings)
+            if len(raw_findings) > len(merged_findings):
+                log.info(
+                    f"[VLM Post-processing] {f_name}: Consolidated {len(raw_findings)} boxes down to {len(merged_findings)} merged boxes."
+                )
+
             log.info(
-                f"[VLM] {f_name}: {len(findings)} anomalies found "
+                f"[VLM] {f_name}: {len(merged_findings)} anomalies found "
                 f"(tokens: {response.usage_metadata.prompt_token_count})"
             )
             return {
                 "image_path": image_path,
                 "image_name": f_name,
-                "anomalies_found": data.get("anomalies_found", False),
-                "findings": findings,
+                "anomalies_found": len(merged_findings) > 0,
+                "findings": merged_findings,
                 "prompt_tokens": response.usage_metadata.prompt_token_count,
             }
 
@@ -144,99 +246,36 @@ def _annotate_single_image(
     }
 
 
-# ── Part 3: Multi-sample ICC per cluster ────────────────────
+# ── Per-image result cache (resume after crash; stable boxes across runs) ──
 
-def _deterministic_sample(paths: list[str], n: int) -> list[str]:
-    """
-    Deterministically sample n items from paths using a seed
-    derived from the sorted path content (reproducible across runs).
-    """
-    if len(paths) <= n:
-        return paths
-    seed_str = "|".join(sorted(paths))
-    seed = int(hashlib.sha256(seed_str.encode()).hexdigest()[:8], 16) % (2**31)
-    import random
-    rng = random.Random(seed)
-    return rng.sample(paths, n)
+def _image_cache_key(image_path: str, system_prompt: str) -> str:
+    """Key = image bytes + prompt + model: any change invalidates the entry."""
+    h = hashlib.sha256()
+    with open(image_path, "rb") as f:
+        h.update(f.read())
+    h.update(system_prompt.encode())
+    h.update(cfg.VLM_MODEL_ID.encode())
+    return h.hexdigest()[:24]
 
 
-def _annotate_cluster_for_icc(
-    cluster_folder: str,
-    client: genai.Client,
-    config: types.GenerateContentConfig,
-    system_prompt: str,
-    n_samples: int = 3,
-) -> dict:
-    """
-    Annotate 2-3 crops from a cluster independently for ICC scoring.
-    Returns a dict with label, confidence, icc, and per-sample results.
-    """
-    from src.utils.io_helpers import list_images
-    folder = Path(cluster_folder)
-    all_crops = [str(p) for p in list_images(folder)]
+def _load_image_cache() -> dict:
+    if not cfg.VLM_IMAGE_CACHE:
+        return {}
+    try:
+        return json.loads(cfg.VLM_IMAGE_CACHE_PATH.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
 
-    if not all_crops:
-        return {
-            "label": "empty",
-            "confidence": 0.0,
-            "icc": 1.0,
-            "n_samples": 0,
-            "labels_seen": [],
-        }
 
-    # Deterministic sampling
-    sample_paths = _deterministic_sample(all_crops, n_samples)
-
-    from src.utils import LogStream
-
-    labels_seen = []
-    confidences = []
-    all_sample_results = []
-
-    for idx, path in enumerate(sample_paths):
-        msg = f"ICC: Evaluating cluster '{folder.name}' (crop {idx+1}/{len(sample_paths)})"
-        log.info(msg)
-        LogStream.emit(msg, level="progress", source="manifest_save")
-
-        result = _annotate_single_image(client, config, path, system_prompt)
-        all_sample_results.append(result)
-
-        # Extract the most prominent label from findings
-        findings = result.get("findings", [])
-        if findings:
-            # Use physical_traits as the label proxy
-            traits = [f.get("physical_traits", "").strip().lower() for f in findings]
-            primary = traits[0] if traits else "unknown"
-            labels_seen.append(primary)
-            confidences.append(1.0)  # Binary confidence: found anomaly
-        else:
-            labels_seen.append("no_defect")
-            confidences.append(0.0)
-
-        # Respect rate limiting (at least 4 seconds per image)
-        sleep_duration = max(4.0, getattr(cfg, "VLM_SLEEP_BETWEEN", 4.5))
-        time.sleep(sleep_duration)
-
-    # ICC: fraction of samples with the same plurality label
-    if labels_seen:
-        from collections import Counter
-        label_counts = Counter(labels_seen)
-        plurality_label, plurality_count = label_counts.most_common(1)[0]
-        icc = plurality_count / len(labels_seen)
-        mean_confidence = sum(confidences) / len(confidences) if confidences else 0.0
-    else:
-        plurality_label = "unknown"
-        icc = 1.0
-        mean_confidence = 0.0
-
-    return {
-        "label": plurality_label,
-        "confidence": mean_confidence,
-        "icc": icc,
-        "n_samples": len(sample_paths),
-        "labels_seen": labels_seen,
-        "sample_results": all_sample_results,
-    }
+def _save_image_cache(cache: dict) -> None:
+    if not cfg.VLM_IMAGE_CACHE:
+        return
+    try:
+        tmp = cfg.VLM_IMAGE_CACHE_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(cache), encoding="utf-8")
+        tmp.replace(cfg.VLM_IMAGE_CACHE_PATH)
+    except OSError as e:
+        log.warning(f"Could not write VLM image cache: {e}")
 
 
 # ── Main node ───────────────────────────────────────────────
@@ -274,7 +313,7 @@ def vlm_annotation_node(state: dict) -> dict:
     else:
         log.info("Using static VLM detection prompt (fallback)")
 
-    client = genai.Client()
+    client = genai.Client(api_key=cfg.GEMINI_API_KEY)
     gen_config = types.GenerateContentConfig(
         response_mime_type="application/json",
         response_schema=InspectionReport,
@@ -284,23 +323,56 @@ def vlm_annotation_node(state: dict) -> dict:
     from src.utils import LogStream
 
     # ── Per-image bbox annotation ────────────────────────────
+    image_cache = _load_image_cache()
     annotations: list[dict] = []
+    failed = 0
+    cache_hits = 0
     for idx, img_path in enumerate(unknown_paths):
+        key = _image_cache_key(img_path, system_prompt)
+        cached = image_cache.get(key)
+        if cached is not None:
+            result = dict(cached, image_path=img_path, image_name=Path(img_path).name)
+            cache_hits += 1
+            log.info(f"[VLM] {idx+1}/{len(unknown_paths)} {Path(img_path).name}: cache hit")
+            annotations.append(result)
+            continue
+
         msg = f"[VLM] Processing image {idx+1}/{len(unknown_paths)}: {Path(img_path).name}"
         log.info(msg)
         LogStream.emit(msg, level="progress", source="vlm_annotation")
         result = _annotate_single_image(client, gen_config, img_path, system_prompt)
         annotations.append(result)
+
+        if result.get("error"):
+            failed += 1
+        else:
+            image_cache[key] = result
+            _save_image_cache(image_cache)   # persist as we go → crash-safe resume
         time.sleep(cfg.VLM_SLEEP_BETWEEN)
+
+    if cache_hits:
+        LogStream.emit(f"VLM: reused {cache_hits} cached image results", level="info", source="vlm_annotation")
 
     total_findings = sum(len(a.get("findings", [])) for a in annotations)
     msg_end = f"VLM annotation complete: {len(annotations)} images, {total_findings} total findings"
     log.info(msg_end)
     LogStream.emit(msg_end, level="info", source="vlm_annotation")
 
+    # If most calls failed the provider/model/key is broken: stop with a clear error
+    # instead of continuing with an (almost) empty annotation set.
+    fail_error = None
+    if annotations and failed / len(annotations) > 0.5:
+        fail_error = (
+            f"VLM annotation failed for {failed}/{len(annotations)} images "
+            f"(model '{cfg.VLM_MODEL_ID}'). Check GEMINI_API_KEY / VLM_MODEL_ID."
+        )
+        log.error(fail_error)
+
     # Save to data/vlm_cache.json automatically
     cache_path = cfg.DATA_DIR / "vlm_cache.json"
     try:
+        if fail_error:
+            raise RuntimeError("run mostly failed — keeping previous vlm_cache.json")
         from src.utils import save_json
         cfg.DATA_DIR.mkdir(parents=True, exist_ok=True)
         save_json(annotations, str(cache_path))
@@ -308,4 +380,7 @@ def vlm_annotation_node(state: dict) -> dict:
     except Exception as e:
         log.warning(f"Failed to write VLM cache: {e}")
 
-    return {"vlm_annotations": annotations}
+    out: dict = {"vlm_annotations": annotations}
+    if fail_error:
+        out["errors"] = list(state.get("errors", [])) + [fail_error]
+    return out

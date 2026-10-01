@@ -375,6 +375,35 @@
                             <span class="metric-pill-label">Mean Cohesion:</span>
                             <span class="metric-pill-value" id="m-mean-cohesion">0.0000</span>
                         </div>
+                        <!-- VARS pill — expands on click -->
+                        <div class="metric-pill metric-pill--vars" id="vars-pill" title="VLM Annotation Reliability Score: ground-truth-free metric for VLM quality. Click for breakdown." style="cursor:pointer;" onclick="toggleVarsDetail()">
+                            <span class="metric-pill-label">VLM Reliability:</span>
+                            <span class="metric-pill-value" id="m-vars">—</span>
+                        </div>
+                    </div>
+                </div>
+                <!-- VARS detail row (hidden by default, toggled by pill click) -->
+                <div id="vars-detail" style="display:none; background:var(--bg-secondary,#f8f9fa); border:1px solid var(--border-light,#e0e0e0); border-radius:8px; padding:12px 16px; margin-bottom:14px; gap:16px; flex-wrap:wrap; align-items:center;">
+                    <span style="font-size:0.75rem; font-weight:600; color:var(--text-muted,#888); white-space:nowrap;">VARS breakdown:</span>
+                    <div style="display:flex; gap:10px; flex-wrap:wrap; flex:1;">
+                        <div style="display:flex; flex-direction:column; align-items:center; min-width:80px;">
+                            <span style="font-size:0.7rem; color:var(--text-muted,#888);">CDS (50%)</span>
+                            <span id="m-vars-cds" style="font-size:1.05rem; font-weight:700; color:var(--accent,#3b82f6);">—</span>
+                            <span style="font-size:0.65rem; color:var(--text-muted,#888);">Discriminability</span>
+                        </div>
+                        <div style="display:flex; flex-direction:column; align-items:center; min-width:80px;">
+                            <span style="font-size:0.7rem; color:var(--text-muted,#888);">BQS (30%)</span>
+                            <span id="m-vars-bqs" style="font-size:1.05rem; font-weight:700; color:var(--success,#22c55e);">—</span>
+                            <span style="font-size:0.65rem; color:var(--text-muted,#888);">Box Quality</span>
+                        </div>
+                        <div style="display:flex; flex-direction:column; align-items:center; min-width:80px;">
+                            <span style="font-size:0.7rem; color:var(--text-muted,#888);">DRS (20%)</span>
+                            <span id="m-vars-drs" style="font-size:1.05rem; font-weight:700; color:var(--warning,#f59e0b);">—</span>
+                            <span style="font-size:0.65rem; color:var(--text-muted,#888);">Detection Rate</span>
+                        </div>
+                        <div style="flex:1; display:flex; align-items:center;">
+                            <span id="m-vars-interp" style="font-size:0.78rem; color:var(--text-secondary,#555); font-style:italic;"></span>
+                        </div>
                     </div>
                 </div>
                 <div class="grid grid--3" id="clusters-grid">

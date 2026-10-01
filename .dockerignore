@@ -30,7 +30,6 @@ data/clusters/
 data/yolo_dataset/
 runs/
 mlruns/
-label-studio-data/
 *.log
 *.sqlite3
 *.index

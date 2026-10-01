@@ -193,6 +193,17 @@ def train_yolo(
         model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
         model.add_callback("on_train_end", on_train_end)
 
+        # Pre-training memory cleanup
+        import gc
+        gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                log.info("Cleared PyTorch CUDA cache before training")
+        except Exception:
+            pass
+
         # Merge all training arguments
         train_args = {
             "data": data,
@@ -200,6 +211,8 @@ def train_yolo(
             "name": proj,
             "exist_ok": True,
             "verbose": True,
+            "workers": 0,    # Prevents multiprocess memory overhead and bad allocation on Windows
+            "cache": False,   # Avoid caching images to RAM
             **train_cfg,
             **aug_params,
         }
@@ -225,8 +238,8 @@ def train_yolo(
         version_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(str(best_model), str(version_path))
 
-        # Replace current best.pt
-        shutil.copy2(str(best_model), str(cfg.YOLO_MODEL_PATH))
+        # NOTE: the live models/best.pt is deliberately NOT touched here.
+        # Only the deploy step (after the quality gate) may swap the active model.
 
         # Extract metrics
         metrics = {}
@@ -251,7 +264,6 @@ def train_yolo(
         return {
             "success": True,
             "model_path": str(version_path),
-            "replaced_model": str(cfg.YOLO_MODEL_PATH),
             "metrics": metrics,
             "training_config": {**train_cfg, **aug_params},
             "error": None,

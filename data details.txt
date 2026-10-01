@@ -1,5 +1,6 @@
-crease - 16
+crease - 33
 inclusion - 16 known
-rolledpit - 16
+rolledpit - 19
 welding line - 16 known
-waist folding - 16
+waist folding - 33
+punching holde - 22 known

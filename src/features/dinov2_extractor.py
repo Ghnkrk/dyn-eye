@@ -6,6 +6,8 @@ using a pre-trained DINOv2 ViT-S/14 model.
 """
 from __future__ import annotations
 
+import threading
+
 import numpy as np
 import torch
 from PIL import Image
@@ -35,18 +37,23 @@ class DinoV2Extractor:
     Extracts feature embeddings from images using DINOv2 (ViT-S/14).
     """
 
+    _models: dict = {}   # device → loaded model (shared, loaded once per process)
+    _load_lock = threading.Lock()
+
     def __init__(self, device: str | None = None):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        log.info(f"Initialising DINOv2 (ViT-S/14) extractor on {self.device}")
-
-        # Load pre-trained DINOv2 model from torch hub
-        try:
-            self.model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14')
-            self.model.to(self.device)
-            self.model.eval()
-        except Exception as e:
-            log.error(f"Failed to load DINOv2 model: {e}")
-            raise
+        with DinoV2Extractor._load_lock:
+            if self.device not in DinoV2Extractor._models:
+                log.info(f"Loading DINOv2 (ViT-S/14) on {self.device}")
+                try:
+                    model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14')
+                    model.to(self.device)
+                    model.eval()
+                except Exception as e:
+                    log.error(f"Failed to load DINOv2 model: {e}")
+                    raise
+                DinoV2Extractor._models[self.device] = model
+        self.model = DinoV2Extractor._models[self.device]
 
     @torch.no_grad()
     def extract_single(self, image_path: str) -> np.ndarray:

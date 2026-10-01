@@ -157,8 +157,8 @@ def validate_yolo_dataset(
             except Exception as e:
                 errors.append(f"Failed to read {split}/{label_path.name}: {e}")
 
-    stats["orphan_images"] = []  # Populated above in warnings
-    stats["orphan_labels"] = []
+    if stats.get("train_images", 0) == 0:
+        errors.append("No training images found in the dataset folder. Export may have failed or no images matched.")
 
     is_valid = len(errors) == 0
 

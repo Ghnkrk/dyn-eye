@@ -57,11 +57,11 @@ class ModelRegistry:
                         "original_path": str(initial_model),
                         "timestamp": ts,
                         "created_at": datetime.now(timezone.utc).isoformat(),
-                        "metrics": {"map50": 0.95, "precision": 0.92, "recall": 0.94},
+                        "metrics": {},   # unknown for the imported baseline — never fabricate
                         "training_config": {},
                         "source": "auto_initialization",
                         "notes": "Original 6-class YOLOv8 base model",
-                        "classes": ["inclusion", "oil_spot", "punching_hole", "silk_spot", "water_spot", "welding_line"],
+                        "classes": list(cfg.BASELINE_CLASSES),
                         "dataset_stats": {},
                         "size_mb": round(initial_model.stat().st_size / (1024 * 1024), 2),
                         "status": "deployed"
@@ -126,7 +126,7 @@ class ModelRegistry:
         shutil.copy2(str(src), str(dst))
 
         # Ensure classes includes the baseline classes as well
-        baseline_classes = ["inclusion", "oil_spot", "punching_hole", "silk_spot", "water_spot", "welding_line"]
+        baseline_classes = list(cfg.BASELINE_CLASSES)
         model_classes = list(classes) if classes else []
         for bc in baseline_classes:
             if bc not in model_classes:
@@ -168,7 +168,12 @@ class ModelRegistry:
 
         src = Path(entry["path"])
         if not src.exists():
-            return {"success": False, "error": f"Model file missing: {entry['path']}"}
+            # Fallback path remapping for migrated workspace paths
+            fallback_src = cfg.MODEL_VERSIONS_DIR / src.name
+            if fallback_src.exists():
+                src = fallback_src
+            else:
+                return {"success": False, "error": f"Model file missing: {entry['path']}"}
 
         # Record previous version for audit
         prev_version = self._registry.get("current")
@@ -223,7 +228,12 @@ class ModelRegistry:
 
         src = Path(entry["path"])
         if not src.exists():
-            return {"success": False, "error": f"Model file missing: {entry['path']}"}
+            # Fallback path remapping for migrated workspace paths
+            fallback_src = cfg.MODEL_VERSIONS_DIR / src.name
+            if fallback_src.exists():
+                src = fallback_src
+            else:
+                return {"success": False, "error": f"Model file missing: {entry['path']}"}
 
         prev_version = self._registry.get("current")
 
@@ -273,7 +283,7 @@ class ModelRegistry:
         try:
             from src.features.known_defects_registry import load_registry, _save_registry
             reg = load_registry()
-            initial_classes = ["inclusion", "oil_spot", "punching_hole", "silk_spot", "water_spot", "welding_line"]
+            initial_classes = list(cfg.BASELINE_CLASSES)
             model_classes = entry.get("classes", [])
             combined = sorted(list(set(initial_classes) | set(model_classes)))
             reg["defect_classes"] = combined

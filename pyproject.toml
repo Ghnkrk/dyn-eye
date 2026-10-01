@@ -6,8 +6,6 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     # ── ML Core ──
-    "label-studio>=1.23.0",
-    "label-studio-ml>=1.0.9",
     "ultralytics>=8.4.47",
     "torch==2.11.0+cu130",
     "torchvision==0.26.0+cu130",
@@ -18,8 +16,9 @@ dependencies = [
     "faiss-cpu>=1.9.0",
     "hdbscan>=0.8.40",
     "scikit-learn>=1.6.0",
-    # ── VLM ──
-    "google-genai>=1.0.0",
+    # ── LLM / VLM ──
+    "google-genai>=1.0.0",   # VLM (image annotation)
+    "groq>=0.11.0",          # text LLM (advisor, retrain decision, prompt writer)
     "pydantic>=2.0.0",
     "pillow>=10.0.0",
     "opencv-python>=4.8.0",
@@ -35,8 +34,12 @@ dependencies = [
     "numpy>=1.26.0",
     "docker>=7.1.0",
     "python-multipart>=0.0.29",
+    "python-dotenv>=1.0.0",
 ]
 
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
 
 [tool.uv]
 index-strategy = "unsafe-best-match"
@@ -48,3 +51,6 @@ url = "https://download.pytorch.org/whl/cu130"
 [tool.uv.sources]
 torch = { index = "pytorch-cu130" }
 torchvision = { index = "pytorch-cu130" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

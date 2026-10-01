@@ -22,51 +22,12 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
 import config as cfg
 from src.utils import get_logger
+from src.features import cluster_registry as creg
 
 log = get_logger("hdbscan_cluster_node")
 
 
-# ── Cluster fingerprint registry ────────────────────────────
-
-def _load_cluster_registry() -> dict:
-    """Load the persistent cluster fingerprint registry."""
-    path = cfg.CLUSTER_REGISTRY_PATH
-    if path.exists():
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as e:
-            log.warning(f"Cluster registry corrupted, starting fresh: {e}")
-    return {"fingerprints": []}
-
-
-def _save_cluster_registry(registry: dict) -> None:
-    """Persist the cluster fingerprint registry."""
-    path = cfg.CLUSTER_REGISTRY_PATH
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(registry, indent=2), encoding="utf-8")
-
-
-def _cosine_distance(a: np.ndarray, b: np.ndarray) -> float:
-    """Cosine distance between two L2-normalised vectors."""
-    dot = float(np.dot(a, b))
-    return 1.0 - dot
-
-
-def _match_centroid_to_registry(
-    centroid: np.ndarray,
-    registry: dict,
-    threshold: float,
-) -> dict | None:
-    """Find the closest matching fingerprint in the registry, if within threshold."""
-    best_match = None
-    best_dist = threshold  # only match if strictly below
-    for fp in registry.get("fingerprints", []):
-        stored = np.array(fp["centroid"], dtype=np.float32)
-        dist = _cosine_distance(centroid, stored)
-        if dist < best_dist:
-            best_dist = dist
-            best_match = fp
-    return best_match
+# Cluster fingerprint registry lives in src/features/cluster_registry.py
 
 
 # ── DBCV grid search with tuning cache ──────────────────────
@@ -257,7 +218,7 @@ def _reassign_noise_points(
         best_cid = None
         best_dist = threshold
         for cid, centroid in centroids.items():
-            dist = _cosine_distance(vec, centroid)
+            dist = creg.cosine_distance(vec, centroid)
             if dist < best_dist:
                 best_dist = dist
                 best_cid = cid
@@ -445,46 +406,47 @@ def hdbscan_cluster_node(state: dict) -> dict:
     )
 
     # ── Cluster fingerprint registry ────────────────────────
-    registry = _load_cluster_registry()
-    registry_hits = 0
+    # Each cluster gets a stable fingerprint id. A cluster that matches a
+    # previously seen (and possibly human-named) fingerprint inherits its label.
+    registry = creg.load()
+    now = datetime.now(timezone.utc).isoformat()
 
-    # Compute centroids per cluster and match against registry
     cluster_centroids: dict[int, np.ndarray] = {}
+    cluster_sizes: dict[int, int] = {}
     for cid in sorted(unique_labels):
         mask = cluster_labels == cid
         centroid = novel_features_norm[mask].mean(axis=0)
         norm = np.linalg.norm(centroid)
         if norm > 0:
-            centroid /= norm
+            centroid = centroid / norm
         cluster_centroids[cid] = centroid
+        cluster_sizes[cid] = int(mask.sum())
 
-        # Try to match against existing fingerprints
-        match = _match_centroid_to_registry(
-            centroid, registry, cfg.CLUSTER_MATCH_THRESHOLD
-        )
-        if match:
+    matches = creg.match_centroids(cluster_centroids, registry, cfg.CLUSTER_MATCH_THRESHOLD)
+    cluster_fingerprints: dict[int, str] = {}   # cluster_id → fingerprint id
+    inherited_labels: dict[int, str] = {}       # cluster_id → label from registry
+    registry_hits = 0
+
+    for cid in sorted(unique_labels):
+        fp = matches.get(cid)
+        if fp is not None:
             registry_hits += 1
-            match["last_seen"] = datetime.now(timezone.utc).isoformat()
-            match["match_count"] = match.get("match_count", 0) + 1
+            fp["last_seen"] = now
+            fp["match_count"] = fp.get("match_count", 0) + 1
+            fp["cluster_size"] = cluster_sizes[cid]
+            if fp.get("label"):
+                inherited_labels[cid] = fp["label"]
             log.info(
-                f"  Cluster {cid}: matched registry fingerprint "
-                f"'{match.get('label', 'unknown')}' (matched {match['match_count']}x)"
+                f"  Cluster {cid}: matched fingerprint {fp['id']} "
+                f"('{fp.get('label') or 'unlabelled'}', matched {fp['match_count']}x)"
             )
         else:
-            # Register new fingerprint
-            new_fp = {
-                "centroid": centroid.tolist(),
-                "label": None,  # Will be filled once VLM labels it
-                "confidence": None,
-                "first_seen": datetime.now(timezone.utc).isoformat(),
-                "last_seen": datetime.now(timezone.utc).isoformat(),
-                "match_count": 1,
-                "cluster_size": int(sum(mask)),
-            }
-            registry["fingerprints"].append(new_fp)
+            fp = creg.new_fingerprint(cluster_centroids[cid], cluster_sizes[cid])
+            registry["fingerprints"].append(fp)
+        cluster_fingerprints[cid] = fp["id"]
 
     try:
-        _save_cluster_registry(registry)
+        creg.save(registry)
     except Exception as e:
         log.warning(f"Failed to save cluster registry: {e}")
 
@@ -502,9 +464,9 @@ def hdbscan_cluster_node(state: dict) -> dict:
 
     for label in sorted(all_labels_set):
         if label == -1:
-            folder_name = "noise"
-        else:
-            folder_name = f"cluster_{label:03d}"
+            # Noise that was not re-assigned goes to "unassigned" (below); no empty folder.
+            continue
+        folder_name = f"cluster_{label:03d}"
         folder_path = clusters_dir / folder_name
         folder_path.mkdir(parents=True, exist_ok=True)
         cluster_folders[int(label)] = str(folder_path)
@@ -515,10 +477,11 @@ def hdbscan_cluster_node(state: dict) -> dict:
         unassigned_dir.mkdir(parents=True, exist_ok=True)
 
     # Copy crops into cluster folders
+    unassigned_set = set(unassigned_indices)
     for idx, (path, label) in enumerate(zip(novel_paths, cluster_labels)):
         src = Path(path)
         label_int = int(label)
-        if label_int == -1 and idx in unassigned_indices:
+        if label_int == -1 and idx in unassigned_set:
             dst_dir = clusters_dir / "unassigned"
         elif label_int in cluster_folders:
             dst_dir = Path(cluster_folders[label_int])
@@ -530,7 +493,7 @@ def hdbscan_cluster_node(state: dict) -> dict:
     # Log cluster sizes
     for label in sorted(all_labels_set):
         count = sum(1 for l in cluster_labels if l == label)
-        name = "noise" if label == -1 else f"cluster_{label:03d}"
+        name = "unassigned(noise)" if label == -1 else f"cluster_{label:03d}"
         log.info(f"  {name}: {count} crops")
     if unassigned_paths:
         log.info(f"  unassigned: {len(unassigned_paths)} crops")
@@ -540,6 +503,8 @@ def hdbscan_cluster_node(state: dict) -> dict:
         "cluster_folders": cluster_folders,
         "num_clusters": num_clusters,
         "cluster_registry": registry,
+        "cluster_fingerprints": cluster_fingerprints,
+        "cluster_inherited_labels": inherited_labels,
         "cluster_tuned_params": tuned_params,
         "unassigned_crop_paths": unassigned_paths,
         "dbcv_score": dbcv_score,

@@ -33,6 +33,7 @@ def log_run_metrics(
     registry_total: int = 0,
     run_id: str = "",
     global_icc: float | None = None,
+    vars_result: dict | None = None,
 ) -> dict:
     """
     Aggregate per-cluster VLM results into run-level metrics.
@@ -81,6 +82,13 @@ def log_run_metrics(
         "registry_hit_rate": round(hit_rate, 4),
         "registry_hits": registry_hits,
         "registry_total": registry_total,
+        # VARS — VLM Annotation Reliability Score
+        "vars_score":  vars_result.get("vars_score")  if vars_result else None,
+        "vars_pct":    vars_result.get("vars_pct")    if vars_result else None,
+        "vars_cds":    vars_result.get("cds")         if vars_result else None,
+        "vars_bqs":    vars_result.get("bqs")         if vars_result else None,
+        "vars_drs":    vars_result.get("drs")         if vars_result else None,
+        "vars_interpretation": vars_result.get("interpretation") if vars_result else None,
     }
 
     # ── Persist to JSON history ─────────────────────────────
@@ -120,6 +128,11 @@ def log_run_metrics(
             }
             if metrics["global_icc"] is not None:
                 mlflow_metrics["global_icc"] = metrics["global_icc"]
+            if metrics.get("vars_score") is not None:
+                mlflow_metrics["vlm_vars_score"]  = metrics["vars_score"]
+                mlflow_metrics["vlm_vars_cds"]    = metrics["vars_cds"]
+                mlflow_metrics["vlm_vars_bqs"]    = metrics["vars_bqs"]
+                mlflow_metrics["vlm_vars_drs"]    = metrics["vars_drs"]
             mlflow.log_metrics(mlflow_metrics)
             if metrics["dbcv_score"] is not None:
                 mlflow.log_metric("clustering_dbcv", metrics["dbcv_score"])
