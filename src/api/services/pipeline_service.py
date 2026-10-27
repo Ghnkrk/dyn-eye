@@ -60,7 +60,7 @@ def _broadcast_status() -> None:
     ws_manager.broadcast_threadsafe("pipeline-status", "status", get_status())
 
 
-def _resync_after_run() -> None:
+def _resync_after_run(run_id: str | None = None, kind: str | None = None) -> None:
     """Mirror whatever JSON this run touched into the DB."""
     try:
         with get_session() as session:
@@ -68,6 +68,8 @@ def _resync_after_run() -> None:
             db_sync.sync_model_registry(session)
             db_sync.sync_known_defects(session)
             db_sync.sync_cluster_fingerprints(session)
+            if run_id:
+                db_sync.sync_pipeline_run(session, run_id, kind=kind)
     except Exception as e:
         log.warning(f"Post-run DB resync failed (non-fatal): {e}")
 
@@ -109,6 +111,7 @@ def _run_discovery(
         level="step", source="dashboard",
     )
 
+    run_id = None
     try:
         from src.pipeline.graph import run_discovery_pipeline
         input_dir = str(cfg.SAMPLE_RUN_DIR) if use_sample_run else input_images_dir
@@ -117,9 +120,11 @@ def _run_discovery(
             yolo_model_path=yolo_model_path,
             use_cache=use_cache,
         )
+        run_id = result.get("run_id")
         with _lock:
             _pipeline_status["discovery"]["status"] = "complete"
             _pipeline_status["discovery"]["result"] = _sanitize(result)
+            _pipeline_status["discovery"]["run_id"] = run_id
             _pipeline_status["discovery"]["completed_at"] = datetime.now().isoformat()
             _clusters_ready = True  # Clusters are now fresh
         LogStream.emit("Discovery pipeline finished successfully", level="info", source="dashboard")
@@ -133,7 +138,7 @@ def _run_discovery(
         log.error(f"Discovery pipeline failed: {e}")
 
     _broadcast_status()
-    _resync_after_run()
+    _resync_after_run(run_id, kind="discovery")
     ws_manager.broadcast_threadsafe("clusters", "updated", {})
 
 
@@ -169,6 +174,7 @@ def _run_retraining(
 
     LogStream.emit("Retraining pipeline triggered", level="step", source="dashboard")
 
+    run_id = None
     try:
         from src.retraining.agent import run_retraining_pipeline
         result = run_retraining_pipeline(
@@ -178,9 +184,14 @@ def _run_retraining(
             batch_size=batch_size,
             freeze=freeze,
         )
+        # MetricsTracker prefixes retraining run ids with "retrain_" — the
+        # authoritative id (matching logs/pipeline_runs/<id>.json) lives in
+        # the embedded metrics snapshot, not result["run_id"].
+        run_id = result.get("_metrics", {}).get("run_id")
         with _lock:
             _pipeline_status["retraining"]["status"] = "complete"
             _pipeline_status["retraining"]["result"] = _sanitize(result)
+            _pipeline_status["retraining"]["run_id"] = run_id
             _pipeline_status["retraining"]["completed_at"] = datetime.now().isoformat()
         LogStream.emit("Retraining pipeline finished", level="info", source="dashboard")
     except Exception as e:
@@ -192,7 +203,7 @@ def _run_retraining(
         log.error(f"Retraining pipeline failed: {e}")
 
     _broadcast_status()
-    _resync_after_run()
+    _resync_after_run(run_id, kind="retraining")
     ws_manager.broadcast_threadsafe("models", "updated", {})
 
 

@@ -221,7 +221,7 @@ def sync_orchestrator_state(session: Session) -> None:
 
 # ── Pipeline run metrics (logs/pipeline_runs/*.json) ─────────
 
-def sync_pipeline_run(session: Session, run_id: str) -> None:
+def sync_pipeline_run(session: Session, run_id: str, kind: str | None = None) -> None:
     """Sync a single run (call this right after a discovery/retraining run finishes)."""
     try:
         data = MetricsTracker.load_run(run_id)
@@ -229,11 +229,15 @@ def sync_pipeline_run(session: Session, run_id: str) -> None:
         log.warning(f"No metrics file for run {run_id}, skipping sync")
         return
 
+    inferred_kind = kind or ("retraining" if run_id.startswith("retrain_") else "discovery")
+
     run = session.exec(select(PipelineRun).where(PipelineRun.run_id == run_id)).first()
     if run is None:
-        run = PipelineRun(run_id=run_id, kind="unknown")
+        run = PipelineRun(run_id=run_id, kind=inferred_kind)
         session.add(run)
         session.flush()
+    else:
+        run.kind = inferred_kind
 
     steps = data.get("steps", {})
     statuses = [s.get("status") for s in steps.values()]

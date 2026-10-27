@@ -123,14 +123,22 @@ async def list_runs(limit: int = 50):
     for run_id in MetricsTracker.list_runs()[:limit]:
         try:
             data = MetricsTracker.load_run(run_id)
+            statuses = [s.get("status") for s in data.get("steps", {}).values()]
+            if statuses and all(s == "success" for s in statuses):
+                run_status = "complete"
+            elif any(s == "failed" for s in statuses):
+                run_status = "failed"
+            else:
+                run_status = "running"
             results.append({
                 "run_id": run_id,
-                "kind": "unknown",
+                "kind": "retraining" if run_id.startswith("retrain_") else "discovery",
+                "status": run_status,
                 "steps": list(data.get("steps", {}).keys()),
                 "summary": {k: v.get("status") for k, v in data.get("steps", {}).items()},
             })
         except Exception:
-            results.append({"run_id": run_id, "kind": "unknown", "steps": [], "summary": {}})
+            results.append({"run_id": run_id, "kind": "unknown", "status": "unknown", "steps": [], "summary": {}})
     return results
 
 
