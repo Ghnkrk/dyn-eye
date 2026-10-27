@@ -12,8 +12,15 @@ build/
 venv/
 
 # Data (tracked by DVC — do not commit)
-data/
+# Ignoring contents (data/*) rather than the directory itself (data/) —
+# git can't re-include a file whose PARENT DIRECTORY was excluded, only
+# individual excluded files, so the negations below need this form.
+data/*
 !data/.gitkeep
+# DVC pointer files ARE meant to be git-tracked (src/retraining/tools/dvc_version.py
+# runs `git add <dataset_dir>.dvc` as part of dataset versioning) — only the
+# data they point to is DVC-managed, not the pointer itself.
+!data/*.dvc
 
 # Model artifacts (large binaries — use DVC or releases)
 *.pt
@@ -31,8 +38,10 @@ runs/
 .DS_Store
 Thumbs.db
 
-# DVC
-*.dvc
+# DVC — pointer files (*.dvc) are meant to be git-tracked, not ignored;
+# DVC manages its own internal ignores under .dvc/ itself (dvc init writes
+# .dvc/.gitignore for cache/tmp). Ignoring *.dvc here used to also match the
+# .dvc/ directory DVC creates, making `dvc init` refuse to run at all.
 /dvc.lock
 
 # MLflow
