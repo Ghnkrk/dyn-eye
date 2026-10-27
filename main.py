@@ -5,8 +5,8 @@ Quick-start commands:
     # Run discovery pipeline CLI
     python -m src.pipeline.graph --images-dir data/input_images
 
-    # Run dashboard
-    python -m dashboard.app
+    # Run the API (serves the legacy dashboard UI until the Next.js cutover)
+    python -m src.api.main
 
     # Setup FAISS index
     python main.py setup-faiss
@@ -54,13 +54,13 @@ Commands:
         import uvicorn
         import config as cfg
         port = args.port or cfg.DASHBOARD_PORT
-        print(f"[Dashboard] Starting DYN-EYE Dashboard on port {port}")
+        print(f"[Dashboard] Starting DYN-EYE API on port {port}")
         uvicorn.run(
-            "dashboard.app:app",
+            "src.api.main:app",
             host=cfg.DASHBOARD_HOST,
             port=port,
             reload=True,
-            reload_dirs=["dashboard", "src"],
+            reload_dirs=["src", "dashboard"],
         )
 
     elif args.command == "discover":
