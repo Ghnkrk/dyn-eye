@@ -41,6 +41,15 @@ const nextConfig: NextConfig = {
     const apiBase = process.env.API_PROXY_TARGET ?? "http://localhost:8501";
     return [{ source: "/api/v2/:path*", destination: `${apiBase}/api/v2/:path*` }];
   },
+
+  experimental: {
+    // Next buffers proxied request bodies (to allow re-reading them) up to
+    // this cap, defaulting to 10MB — way too small for the discovery folder
+    // upload (/api/v2/images/upload), which can be a full batch of
+    // industrial inspection images. Raised generously since this is an
+    // internal tool, not a public endpoint.
+    proxyClientMaxBodySize: "2gb",
+  },
 };
 
 export default nextConfig;

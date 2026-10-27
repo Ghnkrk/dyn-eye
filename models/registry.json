@@ -3,15 +3,11 @@
     {
       "version_id": "v1_initial",
       "version_num": 1,
-      "path": "E:\\dyn-eye\\models\\versions\\best_v1_initial.pt",
-      "original_path": "E:\\dyn-eye\\models\\best_initial.pt",
-      "timestamp": "20260713_171759",
-      "created_at": "2026-07-13T17:17:59.120193+00:00",
-      "metrics": {
-        "mAP50": 0.95,
-        "precision": 0.92,
-        "recall": 0.94
-      },
+      "path": "C:\\Users\\ahamr\\Desktop\\FYP\\dyn-eye\\models\\versions\\best_v1_initial.pt",
+      "original_path": "C:\\Users\\ahamr\\Desktop\\FYP\\dyn-eye\\models\\best_initial.pt",
+      "timestamp": "20261027_103304",
+      "created_at": "2026-10-27T10:33:04.538885+00:00",
+      "metrics": {},
       "training_config": {},
       "source": "factory_reset",
       "notes": "Original 6-class YOLOv8 base model",
@@ -28,49 +24,51 @@
       "status": "retired"
     },
     {
-      "version_id": "v2_20260713_173913",
+      "version_id": "v2_20261027_114900",
       "version_num": 2,
-      "path": "E:\\dyn-eye\\models\\versions\\best_v2_20260713_173913.pt",
-      "original_path": "E:\\dyn-eye\\models\\versions\\best_v20260713_225321.pt",
-      "timestamp": "20260713_173913",
-      "created_at": "2026-07-13T17:39:13.414597+00:00",
+      "path": "C:\\Users\\ahamr\\Desktop\\FYP\\dyn-eye\\models\\versions\\best_v2_20261027_114900.pt",
+      "original_path": "C:\\Users\\ahamr\\Desktop\\FYP\\dyn-eye\\models\\versions\\best_v20261027_171824.pt",
+      "timestamp": "20261027_114900",
+      "created_at": "2026-10-27T11:49:00.370601+00:00",
       "metrics": {
-        "map50": 0.5118005434440636,
-        "map50_95": 0.21474755532665338,
-        "precision": 0.45416033749158397,
-        "recall": 0.4800344110688939
+        "map50": 0.17062343852728468,
+        "map50_95": 0.07686649252803099,
+        "precision": 0.0044705760464152505,
+        "recall": 0.5
       },
       "training_config": {
-        "epochs": 100,
+        "epochs": 20,
         "imgsz": 640,
         "batch": 8,
         "lr0": 0.01,
-        "lrf": 0.1,
+        "lrf": 0.01,
         "momentum": 0.937,
         "weight_decay": 0.0005,
         "warmup_epochs": 3.0,
-        "patience": 20,
+        "patience": 15,
         "optimizer": "SGD",
-        "cos_lr": true,
-        "freeze": 16,
+        "cos_lr": false,
+        "freeze": 22,
         "augment": true,
-        "mosaic": 0.5,
-        "mixup": 0.2,
+        "mosaic": 1.0,
+        "mixup": 0.15,
         "degrees": 10.0,
-        "translate": 0.5,
+        "translate": 0.1,
         "scale": 0.5,
         "flipud": 0.5,
         "fliplr": 0.5,
-        "hsv_h": 0.2,
-        "hsv_s": 0.2,
-        "hsv_v": 0.2
+        "hsv_h": 0.015,
+        "hsv_s": 0.7,
+        "hsv_v": 0.4
       },
       "source": "llm-advised-finetuning",
-      "notes": "Minimum crops per class exceed 10, allowing for transfer learning with heavy augmentation to mitigate class imbalance issues.",
+      "notes": "Total dataset size is 30 crops, which is below the ideal 10-per-class threshold (especially for 'Dirt accumulation' with only 2 samples). However, training is feasible using heavy data augmentation and freezing the majority of the backbone to prevent overfitting. The model will act as a fine-tuned detector relying on pre-learned features.",
       "classes": [
-        "rolled_pit",
-        "waist_folding",
-        "crease",
+        "Streak mark",
+        "Polish spot",
+        "Dirt accumulation",
+        "Oil spillage",
+        "Crate",
         "inclusion",
         "oil_spot",
         "punching_hole",
@@ -79,24 +77,26 @@
         "welding_line"
       ],
       "dataset_stats": {
-        "total_crops": 92,
-        "num_classes": 3,
+        "total_crops": 30,
+        "num_classes": 5,
         "classes": {
-          "rolled_pit": 37,
-          "waist_folding": 29,
-          "crease": 26
+          "Streak mark": 7,
+          "Polish spot": 8,
+          "Dirt accumulation": 2,
+          "Oil spillage": 6,
+          "Crate": 7
         }
       },
-      "size_mb": 48.82,
+      "size_mb": 48.81,
       "status": "deployed"
     }
   ],
-  "current": "v2_20260713_173913",
+  "current": "v2_20261027_114900",
   "deployment_history": [
     {
-      "version_id": "v2_20260713_173913",
+      "version_id": "v2_20261027_114900",
       "previous_version": "v1_initial",
-      "deployed_at": "2026-07-13T17:39:15.500977+00:00",
+      "deployed_at": "2026-10-27T11:49:00.738315+00:00",
       "confirmed_by": "auto-deploy",
       "action": "deploy"
     }

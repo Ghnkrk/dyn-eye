@@ -1,18 +1,10 @@
 "use client";
 
-import { Activity, Boxes, GitCompareArrows, LayoutDashboard, ListTree } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import { NAV_ITEMS } from "@/components/layout/nav-items";
 import { cn } from "@/lib/utils";
-
-const NAV_ITEMS = [
-  { href: "/", label: "Overview", icon: LayoutDashboard },
-  { href: "/clusters", label: "Clusters", icon: Boxes },
-  { href: "/models", label: "Models", icon: GitCompareArrows },
-  { href: "/inference", label: "Inference", icon: Activity },
-  { href: "/runs", label: "Runs", icon: ListTree },
-];
 
 export function Sidebar() {
   const pathname = usePathname();

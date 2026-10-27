@@ -5,6 +5,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 
 import { ClusterCard } from "@/components/dashboard/cluster-card";
+import { ClusterCardSkeleton } from "@/components/dashboard/cluster-card-skeleton";
 import { ClusterDetailDialog } from "@/components/dashboard/cluster-detail-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -62,8 +63,6 @@ export default function ClustersPage() {
         </Button>
       </div>
 
-      {isLoading && <p className="text-muted-foreground">Loading clusters...</p>}
-
       {!isLoading && clusters.length === 0 && (
         <Card>
           <CardContent className="py-10 text-center text-muted-foreground">
@@ -73,6 +72,7 @@ export default function ClustersPage() {
       )}
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        {isLoading && Array.from({ length: 4 }).map((_, i) => <ClusterCardSkeleton key={i} />)}
         {clusters.map((cluster) => (
           <ClusterCard
             key={cluster.name}

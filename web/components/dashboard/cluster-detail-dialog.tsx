@@ -1,11 +1,13 @@
 "use client";
 
+import { ZoomIn } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ImageLightbox } from "@/components/dashboard/image-lightbox";
 import { clustersApi } from "@/lib/api";
 import type { Cluster } from "@/lib/types";
 
@@ -20,6 +22,7 @@ export function ClusterDetailDialog({ cluster, otherClusters, onOpenChange, onCh
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [target, setTarget] = useState<string>("");
   const [busy, setBusy] = useState(false);
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
 
   if (!cluster) return null;
   const clusterName = cluster.name;
@@ -87,29 +90,48 @@ export function ClusterDetailDialog({ cluster, otherClusters, onOpenChange, onCh
         </div>
 
         <div className="grid max-h-[60vh] grid-cols-6 gap-2 overflow-y-auto">
-          {cluster.images.map((img) => {
+          {cluster.images.map((img, i) => {
             const isSelected = selected.has(img);
             return (
-              <button
+              <div
                 key={img}
-                type="button"
-                onClick={() => toggle(img)}
-                className={`relative aspect-square overflow-hidden rounded border-2 ${
+                className={`group relative aspect-square overflow-hidden rounded border-2 ${
                   isSelected ? "border-primary" : "border-transparent"
                 }`}
               >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={clustersApi.cropImageUrl(cluster.name, img)}
-                  alt=""
-                  className="h-full w-full object-cover"
-                  loading="lazy"
-                />
-              </button>
+                <button
+                  type="button"
+                  aria-pressed={isSelected}
+                  aria-label={`${isSelected ? "Deselect" : "Select"} ${img}`}
+                  onClick={() => toggle(img)}
+                  className="absolute inset-0 h-full w-full"
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={clustersApi.cropImageUrl(cluster.name, img)} alt="" className="h-full w-full object-cover" loading="lazy" />
+                </button>
+                <button
+                  type="button"
+                  aria-label={`View ${img} enlarged`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setLightboxIndex(i);
+                  }}
+                  className="absolute right-1 top-1 rounded bg-black/50 p-1 opacity-0 transition group-hover:opacity-100"
+                >
+                  <ZoomIn className="h-3 w-3 text-white" />
+                </button>
+              </div>
             );
           })}
         </div>
       </DialogContent>
+
+      <ImageLightbox
+        clusterName={cluster.name}
+        images={cluster.images}
+        index={lightboxIndex}
+        onIndexChange={setLightboxIndex}
+      />
     </Dialog>
   );
 }

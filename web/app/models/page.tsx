@@ -3,6 +3,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 
+import { TableSkeletonRows } from "@/components/dashboard/table-skeleton-rows";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -72,6 +73,7 @@ export default function ModelsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
+              {versionsQuery.isLoading && <TableSkeletonRows columns={7} />}
               {versions.map((v) => (
                 <TableRow key={v.version_id}>
                   <TableCell className="font-mono text-xs">{v.version_id}</TableCell>
@@ -98,7 +100,7 @@ export default function ModelsPage() {
                   </TableCell>
                 </TableRow>
               ))}
-              {versions.length === 0 && (
+              {!versionsQuery.isLoading && versions.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={7} className="text-center text-muted-foreground">
                     No model versions registered yet.
@@ -126,6 +128,7 @@ export default function ModelsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
+              {historyQuery.isLoading && <TableSkeletonRows columns={5} />}
               {(historyQuery.data?.history ?? []).map((h, i) => (
                 <TableRow key={`${h.version_id}-${h.deployed_at}-${i}`}>
                   <TableCell className="text-xs text-muted-foreground">{new Date(h.deployed_at).toLocaleString()}</TableCell>
@@ -137,7 +140,7 @@ export default function ModelsPage() {
                   <TableCell className="text-xs text-muted-foreground">{h.confirmed_by}</TableCell>
                 </TableRow>
               ))}
-              {(historyQuery.data?.history ?? []).length === 0 && (
+              {!historyQuery.isLoading && (historyQuery.data?.history ?? []).length === 0 && (
                 <TableRow>
                   <TableCell colSpan={5} className="text-center text-muted-foreground">
                     No deployment events yet.

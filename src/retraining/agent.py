@@ -561,11 +561,18 @@ def _run_retraining_pipeline(
     initial_state: RetrainingState = {
         "run_id": run_id,
         "project_id": project_id or -1,
-        "epochs": epochs or cfg.YOLO_TRAIN_EPOCHS,
-        "imgsz": imgsz or cfg.YOLO_TRAIN_IMGSZ,
-        "batch_size": batch_size or cfg.YOLO_TRAIN_BATCH,
         "errors": [],
     }
+    # Only set when the caller explicitly overrode them — leaving them unset
+    # lets train_node's "user params -> LLM config -> config defaults" merge
+    # (see epochs/imgsz/batch resolution below) actually reach the LLM tier,
+    # instead of always short-circuiting on a pre-filled config default.
+    if epochs is not None:
+        initial_state["epochs"] = epochs
+    if imgsz is not None:
+        initial_state["imgsz"] = imgsz
+    if batch_size is not None:
+        initial_state["batch_size"] = batch_size
     if freeze is not None:
         initial_state["freeze"] = freeze
 
