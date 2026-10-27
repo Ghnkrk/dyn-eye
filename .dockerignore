@@ -32,4 +32,9 @@ runs/
 mlruns/
 *.log
 *.sqlite3
+*.db
 *.index
+
+# The Next.js app has its own Dockerfile/build context (web/) — keep its
+# node_modules and build output out of the API image's build context.
+web/

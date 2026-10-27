@@ -53,7 +53,9 @@ Input Images ──► YOLO Inference ──► Known? ──► SKIP (already t
 | **Cluster Quality Metric** | Statistical ICC (one-way ANOVA) | Measures cluster cohesion and separation using DINOv2 embeddings |
 | **Pipeline Orchestration** | LangGraph (stateful DAG) | Coordinates discovery and retraining runs |
 | **Experiment Tracking** | MLflow | Tracks model performance, cluster quality, and VLM run metrics |
-| **Dashboard** | FastAPI + Vanilla JS | Custom UI for cluster management, labeling, and training monitoring |
+| **API Backend** | FastAPI (routers + services) | REST under `/api/v2/*`, live updates over `/ws/stream` |
+| **Read/Audit DB** | SQLite + SQLModel | Mirrors the pipeline's JSON files for queryable run history and cluster data |
+| **Dashboard UI** | Next.js (TypeScript, App Router) | Cluster management, labeling, model deploy/rollback, and training monitoring |
 | **Packaging** | `uv` (PEP 517, fast resolver) | Manages the Python environment and dependencies |
 
 ---
@@ -106,14 +108,26 @@ Measured on a single representative run against a real industrial inspection dat
 
 ```
 dyn-eye/
-├── config.py                   # Central config — paths, thresholds, and VLM settings
-├── main.py                     # CLI entry point (dashboard / discover / retrain / setup-faiss)
+├── config.py                   # Central config — paths, thresholds, DB URL, and VLM settings
+├── main.py                     # CLI entry point (api / discover / retrain / setup-faiss)
 ├── pyproject.toml              # uv-managed dependencies
+├── alembic.ini                 # Points at src/db/migrations
 │
 ├── src/
+│   ├── api/                    # FastAPI backend (API-only — UI is web/)
+│   │   ├── main.py             # App factory, lifespan (DB init/sync, WS manager bind)
+│   │   ├── routers/            # pipeline, clusters, models, faiss, system, vlm, images, inference, logs
+│   │   └── services/           # pipeline_service, cluster_service, model_service, ws_manager
+│   │
+│   ├── db/                     # SQLite read/audit layer (mirrors the JSON files below)
+│   │   ├── models.py           # SQLModel tables
+│   │   ├── session.py          # Engine, init_db(), get_session()
+│   │   ├── sync.py             # JSON → DB mirroring functions
+│   │   └── migrations/         # Alembic migrations
+│   │
 │   ├── pipeline/
 │   │   ├── graph.py            # LangGraph DAG definition
-│   │   ├── orchestrator.py     # FastAPI backend + SSE log streaming
+│   │   ├── orchestrator.py     # Autonomous background daemon (cluster watcher + auto-retrain)
 │   │   ├── state.py            # Typed PipelineState dataclass
 │   │   └── nodes/
 │   │       ├── yolo_inference.py       # YOLO detection + known/unknown split
@@ -136,16 +150,17 @@ dyn-eye/
 │   │
 │   └── utils/
 │       ├── __init__.py         # Logger, LogStream, get_logger, save_json exports
-│       ├── logger.py           # Structured SSE log emitter
-│       ├── metrics.py          # MLflow metric tracker
+│       ├── logger.py           # Structured log emitter
+│       ├── log_stream.py       # In-memory log ring buffer + WebSocket subscriber hook
+│       ├── metrics.py          # Per-run step metrics tracker
 │       └── vlm_metrics.py      # ICC + cluster quality metrics logging
 │
-├── dashboard/
-│   ├── app.py                  # FastAPI app factory & all API routes
-│   └── static/
-│       ├── index.html          # Single-page dashboard (HTML5)
-│       ├── style.css           # Vanilla dark theme
-│       └── app.js              # SSE client + all UI interactions
+├── web/                         # Next.js dashboard UI (TypeScript, App Router)
+│   ├── app/                     # Overview, clusters, models, inference, runs pages
+│   ├── components/              # shadcn/ui-based layout + dashboard components
+│   ├── lib/                     # Typed API client, shared QueryClient
+│   ├── store/                   # Zustand store owning the /ws/stream WebSocket
+│   └── Dockerfile               # Standalone production build
 │
 ├── data/                       # Runtime data (git-ignored, auto-created)
 │   ├── input_images/           # Drop inspection images here
@@ -156,7 +171,8 @@ dyn-eye/
 │   ├── yolo_dataset/           # Auto-generated YOLO fine-tuning dataset
 │   ├── known_defects.json      # Active list of known defect class names
 │   ├── vlm_cache.json          # VLM response cache (avoids duplicate API calls)
-│   └── vlm_metrics.json        # Historical ICC and quality metrics per run
+│   ├── vlm_metrics.json        # Historical ICC and quality metrics per run
+│   └── dyneye.db               # SQLite read/audit DB (mirrors the JSON above — see src/db/)
 │
 ├── models/
 │   ├── best.pt                 # Active YOLO model (replaced on deploy)
@@ -177,6 +193,7 @@ dyn-eye/
 | Python | 3.10 – 3.12 | 3.12 recommended |
 | CUDA | 13.0 | For PyTorch GPU (`torch==2.11.0+cu130`) |
 | `uv` | latest | `pip install uv` |
+| Node.js | 20+ | For the Next.js dashboard in `web/` |
 | Git | any | For version control |
 
 > **CPU-only?** Replace the CUDA torch wheels in `pyproject.toml` with standard CPU wheels.
@@ -279,13 +296,34 @@ The folder name becomes the defect class label. The FAISS index is built automat
 
 ## Running the Project
 
-### Start the Dashboard (recommended)
+The app is two services: the FastAPI backend (`src/api`) and the Next.js UI (`web/`). Run both for the full dashboard experience.
+
+### 1. Start the API backend
 
 ```bash
-uv run python main.py dashboard
+uv run python main.py api
 ```
 
-Open → **http://localhost:8501**
+Serves on **http://localhost:8501** — REST under `/api/v2/*`, live updates over `/ws/stream`, interactive docs at `/docs`.
+
+### 2. Start the Next.js dashboard
+
+```bash
+cd web
+cp .env.local.example .env.local   # only needed if the API isn't on localhost:8501
+npm install
+npm run dev
+```
+
+Open → **http://localhost:3000**
+
+### 3. Or run both with Docker Compose
+
+```bash
+docker compose up --build
+```
+
+Starts the API on `:8501` and the dashboard on `:3000`, wired together over the compose network.
 
 ### Run Pipeline Headlessly (full run)
 
@@ -305,19 +343,13 @@ Reuses cached YOLO detections and VLM annotations from `data/vlm_cache.json`. Th
 
 ## Dashboard Guide
 
-### Pipeline Panel (Left)
-- **Known Defects**: Current model class list.
-- **Upload Zone**: Drag & drop images.
-- **Run Pipeline**: Executes the full LangGraph discovery sequence.
-- **VLM Prompt Viewer**: Non-intrusive collapsible section showing the dynamic prompt used for the current run.
+The dashboard (`web/`) is a Next.js app with five pages, all talking to the FastAPI backend over `/api/v2/*` and a shared `/ws/stream` WebSocket for live updates:
 
-### Cluster Management (Center)
-- **Rename & Label**: Click any cluster card to assign a defect name (final labeling — done by the user, not the VLM).
-- **Move / Drop**: Re-assign crops to other clusters or remove noisy detections.
-
-### Execution Log & Retraining Monitor (Right)
-- **Live Logs**: Real-time SSE-streamed pipeline step events.
-- **Retraining Panel**: LLM advisor output, fine-tuning triggers, and custom parameter controls.
+- **Overview** (`/`) — trigger discovery or LLM-advised retraining, watch the live pipeline log stream in, factory reset.
+- **Clusters** (`/clusters`) — name clusters, merge them into each other, and move/drop individual crops (opens a per-cluster crop grid).
+- **Models** (`/models`) — model version table with deploy/rollback actions, plus the full deployment history.
+- **Inference** (`/inference`) — upload an image and compare the baseline vs. finetuned YOLO model side by side.
+- **Runs** (`/runs`) — per-run, per-step latency and status, backed by the SQLite sync layer (`src/db/`) rather than re-parsing JSON on every request.
 
 ---
 
@@ -398,10 +430,10 @@ uv run python main.py setup-faiss
 ```
 Or use **Factory Reset** in the dashboard.
 
-### Dashboard Port In Use
+### API Port In Use
 ```bash
 netstat -ano | findstr :8501
-uv run python main.py dashboard
+uv run python main.py api
 ```
 
 ---

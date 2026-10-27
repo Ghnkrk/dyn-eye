@@ -20,8 +20,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Copy project source files
 COPY . .
 
-# Expose ports: 8501 (Dashboard), 9090 (ML Backend)
+# Expose ports: 8501 (API), 9090 (ML Backend)
 EXPOSE 8501 9090
 
 # Default command
-CMD ["python", "main.py", "dashboard"]
+CMD ["python", "main.py", "api"]

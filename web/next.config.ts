@@ -1,6 +1,10 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Lean runtime image for Docker (web/Dockerfile) — copies only the
+  // standalone server output instead of full node_modules.
+  output: "standalone",
+
   // This app is a fully live, mutation-heavy operational dashboard — every
   // page is client-rendered against the FastAPI backend (TanStack Query +
   // WebSocket), so there's no static content for Cache Components'
