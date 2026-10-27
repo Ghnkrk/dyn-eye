@@ -28,6 +28,12 @@ MODEL_VERSIONS_DIR = MODELS_DIR / "versions"
 LOGS_DIR = PROJECT_ROOT / "logs"
 PIPELINE_RUNS_DIR = LOGS_DIR / "pipeline_runs"
 
+# ── Dashboard read/audit database (SQLite) ──
+# Mirrors the JSON files above for querying; the JSON files remain the
+# source of truth that the pipeline/retraining code reads and writes.
+DATABASE_PATH = DATA_DIR / "dyneye.db"
+DATABASE_URL = os.environ.get("DATABASE_URL", f"sqlite:///{DATABASE_PATH}")
+
 # ============================================================
 # ENSURE DIRECTORIES EXIST
 # ============================================================
@@ -74,17 +80,9 @@ KNOWN_DEFECT_NAMES: list[str] = _load_known_names()
 # ============================================================
 # LLM / VLM SETTINGS
 # ============================================================
-<<<<<<< HEAD
 # Secrets come ONLY from the environment / .env (never hardcode defaults here).
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip().strip("'\" ")
-=======
-GEMINI_API_KEY = os.environ.get(
-    "GEMINI_API_KEY",
-    "AIzaSyCOTORQ_xn-j-OffOrNibKtEGEGMf7_Zm0",
-).strip("'\" ")
-os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY
->>>>>>> 8131959fae1c5eaeac2a047c4d746d33d3dc573d
 
 GEMINI_API_KEY = _env("GEMINI_API_KEY")   # VLM only (Google GenAI)
 GROQ_API_KEY = _env("GROQ_API_KEY")       # every text-LLM call (Groq)

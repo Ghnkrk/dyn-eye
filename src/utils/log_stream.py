@@ -1,7 +1,7 @@
 """
 Real-time log streaming — thread-safe, in-memory ring buffer.
 
-Pipeline nodes write log events here; the dashboard reads them via SSE.
+Pipeline nodes write log events here; the API reads them via SSE/WebSocket.
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 
 @dataclass
@@ -40,6 +40,18 @@ class LogStream:
     _lock = threading.Lock()
     _seq = 0                    # monotonic counter for cursor-based polling
     _seq_map: dict[int, int] = {}  # seq -> index mapping
+    _subscribers: list[Callable[[dict], None]] = []
+
+    @classmethod
+    def subscribe(cls, callback: Callable[[dict], None]) -> None:
+        """
+        Register a callback invoked synchronously with each event's dict
+        right after it's buffered. Used by the WebSocket connection manager
+        to push live events without this module knowing about WebSockets.
+        Callbacks must not raise or block — emit() is called from pipeline
+        worker threads.
+        """
+        cls._subscribers.append(callback)
 
     @classmethod
     def emit(
@@ -59,6 +71,13 @@ class LogStream:
                 data=data,
             )
             cls._buffer.append(evt)
+            event_dict = evt.to_dict()
+
+        for callback in cls._subscribers:
+            try:
+                callback(event_dict)
+            except Exception:
+                pass  # a dead/misbehaving subscriber must never break pipeline logging
 
     @classmethod
     def tail(cls, last_n: int = 100) -> list[dict]:
