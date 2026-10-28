@@ -150,10 +150,11 @@ def trigger_retraining(
     imgsz: int | None = None,
     batch_size: int | None = None,
     freeze: int | None = None,
+    base_model_path: str | None = None,
 ) -> None:
     thread = threading.Thread(
         target=_run_retraining,
-        args=(project_id, epochs, imgsz, batch_size, freeze),
+        args=(project_id, epochs, imgsz, batch_size, freeze, base_model_path),
         daemon=True,
     )
     thread.start()
@@ -165,6 +166,7 @@ def _run_retraining(
     imgsz: int | None,
     batch_size: int | None,
     freeze: int | None,
+    base_model_path: str | None = None,
 ) -> None:
     with _lock:
         _pipeline_status["retraining"]["status"] = "running"
@@ -183,6 +185,7 @@ def _run_retraining(
             imgsz=imgsz,
             batch_size=batch_size,
             freeze=freeze,
+            base_model_path=base_model_path,
         )
         # MetricsTracker prefixes retraining run ids with "retrain_" — the
         # authoritative id (matching logs/pipeline_runs/<id>.json) lives in

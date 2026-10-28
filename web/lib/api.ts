@@ -7,6 +7,7 @@ import type {
   ClustersResponse,
   DeploymentEvent,
   InferenceCompareResponse,
+  ModelVersion,
   ModelVersionsResponse,
   PipelineStatus,
   RunDetail,
@@ -68,12 +69,14 @@ export const pipelineApi = {
     imgsz?: number | null;
     batch_size?: number | null;
     freeze?: number | null;
+    base_model_path?: string | null;
   }) => postJson<{ message: string; status: string }>("/pipeline/retraining/trigger", body),
   smartRetrain: (body: {
     epochs?: number | null;
     imgsz?: number | null;
     batch_size?: number | null;
     freeze?: number | null;
+    base_model_path?: string | null;
   }) => postJson<{ message: string; status: string }>("/pipeline/retraining/smart-trigger", body),
   advisorPreview: () =>
     request<{ metadata: Record<string, unknown>; recommendation: Record<string, unknown> }>(
@@ -118,6 +121,22 @@ export const modelsApi = {
   deploy: (versionId: string) => postJson<{ success: boolean; error?: string }>("/models/deploy-confirm", { version_id: versionId }),
   rollback: (versionId: string, confirmedBy = "dashboard") =>
     postJson<{ success: boolean; error?: string }>("/models/rollback", { version_id: versionId, confirmed_by: confirmedBy }),
+  upload: (file: File, notes = "") => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("notes", notes);
+    return request<ModelVersion>("/models/upload", { method: "POST", body: form });
+  },
+  replace: (versionId: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return request<{ success: boolean; error?: string; entry?: ModelVersion }>(
+      `/models/${encodeURIComponent(versionId)}/replace`,
+      { method: "POST", body: form }
+    );
+  },
+  remove: (versionId: string) =>
+    request<{ success: boolean; error?: string }>(`/models/${encodeURIComponent(versionId)}`, { method: "DELETE" }),
 };
 
 // ── FAISS ─────────────────────────────────────────────────────

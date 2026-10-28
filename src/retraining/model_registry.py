@@ -155,6 +155,58 @@ class ModelRegistry:
         log.info(f"Registered model version: {version_id} ({entry['size_mb']} MB)")
         return entry
 
+    def replace_version_file(self, version_id: str, new_model_path: str) -> dict:
+        """
+        Replace the weights file backing an existing version (Update).
+
+        Keeps the version_id/metrics/notes as-is but swaps the underlying
+        .pt file, refreshing size_mb/timestamp. If the version is currently
+        deployed, also re-copies the new weights to the active YOLO path.
+        """
+        entry = self._find_version(version_id)
+        if not entry:
+            return {"success": False, "error": f"Version '{version_id}' not found"}
+
+        src = Path(new_model_path)
+        if not src.exists():
+            return {"success": False, "error": f"Uploaded model file not found: {new_model_path}"}
+
+        dst = Path(entry["path"])
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(src), str(dst))
+
+        entry["size_mb"] = round(dst.stat().st_size / (1024 * 1024), 2)
+        entry["timestamp"] = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+
+        if entry["status"] == "deployed":
+            shutil.copy2(str(dst), str(cfg.YOLO_MODEL_PATH))
+
+        self._save()
+        log.info(f"Replaced weights file for model version: {version_id}")
+        return {"success": True, "version_id": version_id, "entry": entry}
+
+    def delete_version(self, version_id: str) -> dict:
+        """Delete a registered version (refuses to delete the currently deployed one)."""
+        entry = self._find_version(version_id)
+        if not entry:
+            return {"success": False, "error": f"Version '{version_id}' not found"}
+
+        if entry["status"] == "deployed":
+            return {"success": False, "error": "Cannot delete the currently deployed version — deploy or rollback to another version first."}
+
+        self._registry["versions"] = [v for v in self._registry["versions"] if v["version_id"] != version_id]
+        self._save()
+
+        try:
+            path = Path(entry["path"])
+            if path.exists():
+                path.unlink()
+        except OSError as e:
+            log.warning(f"Failed to delete weights file for {version_id}: {e}")
+
+        log.info(f"Deleted model version: {version_id}")
+        return {"success": True, "version_id": version_id}
+
     def deploy_version(self, version_id: str, confirmed_by: str = "system") -> dict:
         """
         Deploy a specific model version as the active model.

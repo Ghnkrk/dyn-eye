@@ -21,10 +21,16 @@ services:
     build:
       context: ./web
       dockerfile: Dockerfile
+      args:
+        # next.config.ts's rewrites() is evaluated at `next build` time, not
+        # per-request — this must be a build arg, not just a runtime env var,
+        # or the image bakes in the Dockerfile's localhost fallback instead.
+        API_PROXY_TARGET: http://api:8501
     ports:
       - "3000:3000"
     environment:
-      # Server-side rewrite target (src/api/* calls) — internal Docker network.
+      # Harmless at runtime (rewrites() won't re-read it), kept so any other
+      # runtime code that references this var sees the right value too.
       - API_PROXY_TARGET=http://api:8501
       # NEXT_PUBLIC_WS_URL intentionally unset: the browser falls back to
       # ws://<page-hostname>:8501/ws/stream, which resolves correctly against

@@ -41,6 +41,7 @@ async def trigger_retraining(req: RetrainingRequest):
         imgsz=req.imgsz,
         batch_size=req.batch_size,
         freeze=req.freeze,
+        base_model_path=req.base_model_path,
     )
     return {"message": "Retraining pipeline triggered", "status": "starting"}
 
@@ -56,6 +57,7 @@ async def smart_retrain(req: SmartRetrainRequest):
         imgsz=req.imgsz,
         batch_size=req.batch_size,
         freeze=req.freeze,
+        base_model_path=req.base_model_path,
     )
     return {"message": "Smart retraining triggered (LLM will advise)", "status": "starting"}
 

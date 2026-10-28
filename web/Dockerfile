@@ -9,8 +9,11 @@ FROM node:22-slim AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-# API_PROXY_TARGET is read at runtime inside next.config.ts's rewrites(),
-# not baked in here — only NEXT_PUBLIC_* vars would need to be build-time.
+# next.config.ts's rewrites() is evaluated at build time (next build bakes
+# its return value into .next/routes-manifest.json) — not per-request — so
+# API_PROXY_TARGET must be available here, not just at container runtime.
+ARG API_PROXY_TARGET=http://api:8501
+ENV API_PROXY_TARGET=${API_PROXY_TARGET}
 RUN npm run build
 
 FROM node:22-slim AS runner

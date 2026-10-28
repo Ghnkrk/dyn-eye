@@ -79,12 +79,6 @@ export default function OverviewPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
-  const retrainMutation = useMutation({
-    mutationFn: () => pipelineApi.smartRetrain({}),
-    onSuccess: () => toast.success("Smart retraining triggered — LLM will advise"),
-    onError: (e: Error) => toast.error(e.message),
-  });
-
   const resetMutation = useMutation({
     mutationFn: () => systemApi.resetAll(true),
     onSuccess: () => {
@@ -95,7 +89,6 @@ export default function OverviewPage() {
   });
 
   const discoveryRunning = status?.discovery.status === "running";
-  const retrainingRunning = status?.retraining.status === "running";
 
   return (
     <div className="flex flex-col gap-6">
@@ -104,7 +97,7 @@ export default function OverviewPage() {
         <p className="text-muted-foreground">Trigger pipeline runs and watch them execute in real time.</p>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-2">
         <Card>
           <CardHeader>
             <CardTitle>Discovery</CardTitle>
@@ -177,18 +170,6 @@ export default function OverviewPage() {
               onClick={() => discoveryMutation.mutate()}
             >
               {discoveryRunning ? "Running..." : "Trigger discovery"}
-            </Button>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Retraining</CardTitle>
-            <CardDescription>LLM-advised: analyzes the dataset, then decides hyperparameters.</CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-3">
-            <Button disabled={retrainingRunning || retrainMutation.isPending} onClick={() => retrainMutation.mutate()}>
-              {retrainingRunning ? "Running..." : "Smart retrain"}
             </Button>
           </CardContent>
         </Card>

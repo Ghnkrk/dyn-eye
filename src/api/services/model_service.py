@@ -44,3 +44,39 @@ def deploy_confirm(version_id: str) -> dict:
         LogStream.emit(f"Model {version_id} deployed successfully", level="info", source="model_registry")
     _resync_and_broadcast()
     return result
+
+
+def create_version(model_path: str, notes: str = "") -> dict:
+    LogStream.emit(f"Registering uploaded model: {model_path}", level="step", source="model_registry")
+    registry = ModelRegistry()
+    entry = registry.register_version(model_path=model_path, source="manual-upload", notes=notes)
+    if entry:
+        LogStream.emit(f"Registered model version: {entry['version_id']}", level="info", source="model_registry")
+    else:
+        LogStream.emit("Model registration failed", level="error", source="model_registry")
+    _resync_and_broadcast()
+    return entry
+
+
+def replace_version(version_id: str, model_path: str) -> dict:
+    LogStream.emit(f"Replacing weights for model version: {version_id}", level="step", source="model_registry")
+    registry = ModelRegistry()
+    result = registry.replace_version_file(version_id, model_path)
+    if result["success"]:
+        LogStream.emit(f"Replaced weights for {version_id}", level="info", source="model_registry")
+    else:
+        LogStream.emit(f"Replace failed: {result.get('error', 'Unknown')}", level="error", source="model_registry")
+    _resync_and_broadcast()
+    return result
+
+
+def delete_version(version_id: str) -> dict:
+    LogStream.emit(f"Deleting model version: {version_id}", level="step", source="model_registry")
+    registry = ModelRegistry()
+    result = registry.delete_version(version_id)
+    if result["success"]:
+        LogStream.emit(f"Deleted model version: {version_id}", level="info", source="model_registry")
+    else:
+        LogStream.emit(f"Delete failed: {result.get('error', 'Unknown')}", level="error", source="model_registry")
+    _resync_and_broadcast()
+    return result

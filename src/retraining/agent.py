@@ -52,6 +52,7 @@ class RetrainingState(TypedDict, total=False):
     imgsz: int
     batch_size: int
     freeze: int                  # user-supplied override (None = let LLM decide)
+    base_model_path: str         # weights to fine-tune from (None = currently active model)
 
     # Export
     export_result: dict
@@ -251,6 +252,7 @@ def train_node(state: dict) -> dict:
 
     try:
         result = train_yolo(
+            model_path=state.get("base_model_path"),
             epochs=epochs,
             imgsz=imgsz,
             batch=batch,
@@ -523,12 +525,13 @@ def run_retraining_pipeline(
     imgsz: int | None = None,
     batch_size: int | None = None,
     freeze: int | None = None,
+    base_model_path: str | None = None,
 ) -> dict:
     """Run the retraining pipeline; refuses to start if one is already running."""
     if not _run_lock.acquire(blocking=False):
         raise RuntimeError("A retraining run is already in progress.")
     try:
-        return _run_retraining_pipeline(project_id, epochs, imgsz, batch_size, freeze)
+        return _run_retraining_pipeline(project_id, epochs, imgsz, batch_size, freeze, base_model_path)
     finally:
         _run_lock.release()
 
@@ -539,16 +542,18 @@ def _run_retraining_pipeline(
     imgsz: int | None = None,
     batch_size: int | None = None,
     freeze: int | None = None,
+    base_model_path: str | None = None,
 ) -> dict:
     """
     Run the complete retraining pipeline.
 
     Args:
-        project_id: (legacy, unused)
-        epochs:     Training epochs override (None = let LLM decide)
-        imgsz:      Training image size override
-        batch_size: Training batch size override
-        freeze:     Backbone freeze depth override (None = let LLM decide)
+        project_id:      (legacy, unused)
+        epochs:          Training epochs override (None = let LLM decide)
+        imgsz:           Training image size override
+        batch_size:      Training batch size override
+        freeze:          Backbone freeze depth override (None = let LLM decide)
+        base_model_path: Weights to fine-tune from (None = currently active model)
 
     Returns:
         Final state dict with all step results.
@@ -575,6 +580,8 @@ def _run_retraining_pipeline(
         initial_state["batch_size"] = batch_size
     if freeze is not None:
         initial_state["freeze"] = freeze
+    if base_model_path is not None:
+        initial_state["base_model_path"] = base_model_path
 
     log.info(f"═══ Starting retraining pipeline: {run_id} ═══")
 

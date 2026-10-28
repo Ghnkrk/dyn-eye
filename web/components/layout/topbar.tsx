@@ -47,7 +47,7 @@ export function Topbar() {
       <div className="flex items-center gap-2">
         <div className="hidden items-center gap-2 sm:flex">
           <Badge variant={statusVariant(status?.discovery.status)}>Discovery: {status?.discovery.status ?? "idle"}</Badge>
-          <Badge variant={statusVariant(status?.retraining.status)}>Retraining: {status?.retraining.status ?? "idle"}</Badge>
+          <Badge variant={statusVariant(status?.retraining.status)}>FineTuning: {status?.retraining.status ?? "idle"}</Badge>
           <Badge variant={status?.orchestrator.status === "running" ? "default" : "outline"}>
             Orchestrator: {status?.orchestrator.status ?? "idle"}
           </Badge>

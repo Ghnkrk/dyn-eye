@@ -14,6 +14,7 @@ class RetrainingRequest(BaseModel):
     imgsz: int | None = None
     batch_size: int | None = None
     freeze: int | None = None
+    base_model_path: str | None = None  # weights to fine-tune from; None = currently active model
 
 
 class SmartRetrainRequest(BaseModel):
@@ -21,6 +22,7 @@ class SmartRetrainRequest(BaseModel):
     imgsz: int | None = None
     batch_size: int | None = None
     freeze: int | None = None  # user override; None = let LLM decide
+    base_model_path: str | None = None  # weights to fine-tune from; None = currently active model
 
 
 class OrchestratorRequest(BaseModel):
