@@ -1,6 +1,6 @@
 outs:
-- md5: 6cbef003c7b1b111e8736476e70c900c.dir
-  size: 5580941
+- md5: d40197f52826541e856a1c74a5d7ce1a.dir
+  size: 5564857
   nfiles: 27
   hash: md5
   path: yolo_dataset
