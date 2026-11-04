@@ -88,15 +88,85 @@
         }
       },
       "size_mb": 48.81,
+      "status": "retired"
+    },
+    {
+      "version_id": "v3_20261104_164005",
+      "version_num": 3,
+      "path": "C:\\Users\\ahamr\\Desktop\\Projects\\Ongoing\\FYP\\dyn-eye\\models\\versions\\best_v3_20261104_164005.pt",
+      "original_path": "C:\\Users\\ahamr\\Desktop\\Projects\\Ongoing\\FYP\\dyn-eye\\models\\versions\\best_v20261104_220811.pt",
+      "timestamp": "20261104_164005",
+      "created_at": "2026-11-04T16:40:05.954837+00:00",
+      "metrics": {
+        "map50": 0.2245606646628903,
+        "map50_95": 0.08687467244009286,
+        "precision": 0.6729314485254912,
+        "recall": 0.20454545454545456
+      },
+      "training_config": {
+        "epochs": 40,
+        "imgsz": 640,
+        "batch": 16,
+        "lr0": 0.008,
+        "lrf": 0.01,
+        "momentum": 0.937,
+        "weight_decay": 0.0005,
+        "warmup_epochs": 3.0,
+        "patience": 15,
+        "optimizer": "AdamW",
+        "cos_lr": true,
+        "freeze": 12,
+        "augment": true,
+        "mosaic": 1.0,
+        "mixup": 0.15,
+        "degrees": 15.0,
+        "translate": 0.2,
+        "scale": 0.5,
+        "flipud": 0.5,
+        "fliplr": 0.5,
+        "hsv_h": 0.015,
+        "hsv_s": 0.7,
+        "hsv_v": 0.4
+      },
+      "source": "llm-advised-finetuning",
+      "notes": "Dataset has 162 crops across 3 classes (min 27/class). Sufficient for fine-tuning with augmentation.",
+      "classes": [
+        "Dark spots",
+        "Streak marks",
+        "Oil spill",
+        "inclusion",
+        "oil_spot",
+        "punching_hole",
+        "silk_spot",
+        "water_spot",
+        "welding_line"
+      ],
+      "dataset_stats": {
+        "total_crops": 162,
+        "num_classes": 3,
+        "classes": {
+          "Dark spots": 44,
+          "Streak marks": 91,
+          "Oil spill": 27
+        }
+      },
+      "size_mb": 48.8,
       "status": "deployed"
     }
   ],
-  "current": "v2_20261027_114900",
+  "current": "v3_20261104_164005",
   "deployment_history": [
     {
       "version_id": "v2_20261027_114900",
       "previous_version": "v1_initial",
       "deployed_at": "2026-10-27T11:49:00.738315+00:00",
+      "confirmed_by": "auto-deploy",
+      "action": "deploy"
+    },
+    {
+      "version_id": "v3_20261104_164005",
+      "previous_version": "v2_20261027_114900",
+      "deployed_at": "2026-11-04T16:40:06.382555+00:00",
       "confirmed_by": "auto-deploy",
       "action": "deploy"
     }

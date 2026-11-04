@@ -1,6 +1,7 @@
 """Image upload and serving: crops, cluster crops, and input images."""
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 from typing import List
@@ -13,10 +14,24 @@ from src.utils import LogStream
 
 router = APIRouter(prefix="/api/v2", tags=["images"])
 
+IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".webp")
+CROP_NAME_RE = re.compile(r"_crop_\d+$")  # pipeline output naming: <source>_crop_<n>
+
 
 @router.post("/images/upload")
 async def upload_images(files: List[UploadFile] = File(...)):
     """Upload images to run the pipeline on, clearing existing input images."""
+    # Validate before clearing: a rejected upload must leave the input folder untouched.
+    images = [f for f in files if f.filename.lower().endswith(IMAGE_SUFFIXES)]
+    originals = [f for f in images if not CROP_NAME_RE.search(Path(f.filename).stem)]
+    skipped_crops = len(images) - len(originals)
+    if not originals:
+        raise HTTPException(
+            400,
+            "No full-size images found. Crops and cluster folders are pipeline output "
+            "and can't be used as input — choose the folder of original images.",
+        )
+
     try:
         input_dir = cfg.INPUT_IMAGES_DIR
 
@@ -31,10 +46,7 @@ async def upload_images(files: List[UploadFile] = File(...)):
             input_dir.mkdir(parents=True, exist_ok=True)
 
         saved_count = 0
-        for file in files:
-            if not file.filename.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".webp")):
-                continue
-
+        for file in originals:
             base_name = Path(file.filename).name  # prevent subdirectory write issues
             dest_path = input_dir / base_name
             with open(dest_path, "wb") as f:
@@ -42,7 +54,7 @@ async def upload_images(files: List[UploadFile] = File(...)):
             saved_count += 1
 
         LogStream.emit(f"Uploaded {saved_count} new images to input directory", level="info", source="system")
-        return {"success": True, "count": saved_count}
+        return {"success": True, "count": saved_count, "skipped_crops": skipped_crops}
     except Exception as e:
         LogStream.emit(f"Image upload failed: {e}", level="error", source="system")
         raise HTTPException(500, f"Failed to upload images: {e}")

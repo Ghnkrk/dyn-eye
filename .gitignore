@@ -28,7 +28,8 @@ models/versions/
 
 # Logs & training runs
 logs/
-runs/
+# Anchored: YOLO training output at the repo root only (web/app/runs is a page)
+/runs/
 
 # IDE
 .vscode/
