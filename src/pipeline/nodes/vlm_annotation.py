@@ -181,7 +181,7 @@ def _annotate_single_image(
 ) -> dict:
     """
     Send a single image to VLM and return annotation dict.
-    Includes retry logic with exponential backoff and post-processing box merging.
+    Includes retry logic with a fixed wait between attempts and post-processing box merging.
     """
     f_name = Path(image_path).name
     img = Image.open(image_path)
@@ -225,13 +225,7 @@ def _annotate_single_image(
             }
 
         except Exception as e:
-            err_str = str(e)
-            is_503 = "503" in err_str or "high demand" in err_str.lower() or "unavailable" in err_str.lower() or "getaddrinfo failed" in err_str.lower()
-            
-            sleep_sec = cfg.VLM_BACKOFF_FACTOR ** (attempt + 1)
-            if is_503:
-                sleep_sec = max(sleep_sec, 8 + attempt * 4)
-                
+            sleep_sec = cfg.VLM_RETRY_WAIT
             log.warning(f"[VLM] {f_name} attempt {attempt+1} failed: {e}. Retrying in {sleep_sec}s...")
             if attempt < cfg.VLM_MAX_RETRIES - 1:
                 time.sleep(sleep_sec)

@@ -89,29 +89,32 @@ def version_dataset(
     dvc_file = f"{ds_dir}.dvc"
     log.info(f"DVC file: {dvc_file}")
 
-    # Git add
-    rc, out, err = _run_cmd(
-        ["git", "add", dvc_file, ".gitignore"],
-        cwd=cwd,
-    )
-    if rc != 0:
-        log.warning(f"git add warning: {err}")
+    if not cfg.DVC_GIT_COMMIT:
+        log.info("DVC_GIT_COMMIT is off: dataset snapshot recorded in DVC only (no git add/commit/tag)")
+    else:
+        # Git add
+        rc, out, err = _run_cmd(
+            ["git", "add", dvc_file, ".gitignore"],
+            cwd=cwd,
+        )
+        if rc != 0:
+            log.warning(f"git add warning: {err}")
 
-    # Git commit
-    rc, out, err = _run_cmd(
-        ["git", "commit", "-m", msg, "--allow-empty"],
-        cwd=cwd,
-    )
-    if rc != 0:
-        log.warning(f"git commit warning: {err}")
+        # Git commit
+        rc, out, err = _run_cmd(
+            ["git", "commit", "-m", msg, "--allow-empty"],
+            cwd=cwd,
+        )
+        if rc != 0:
+            log.warning(f"git commit warning: {err}")
 
-    # Git tag
-    rc, out, err = _run_cmd(
-        ["git", "tag", "-a", tag, "-m", msg],
-        cwd=cwd,
-    )
-    if rc != 0:
-        log.warning(f"git tag warning: {err}")
+        # Git tag
+        rc, out, err = _run_cmd(
+            ["git", "tag", "-a", tag, "-m", msg],
+            cwd=cwd,
+        )
+        if rc != 0:
+            log.warning(f"git tag warning: {err}")
 
     # Save version metadata
     version_meta = {

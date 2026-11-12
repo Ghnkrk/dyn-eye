@@ -6,7 +6,8 @@ A LangGraph agent that orchestrates the post-labeling workflow:
   2. Validate YOLO dataset format
   3. Version dataset with DVC
   4. LLM Advisor → analyze dataset and recommend training config
-  5. Fine-tune YOLO model with LLM-recommended parameters
+  5. (Optional, user opt-in) Upsample minority classes with augmented copies
+  6. Fine-tune YOLO model with LLM-recommended parameters
   6. Version and deploy model via MLflow
   7. Sync known-defects registry + rebuild FAISS
 
@@ -30,6 +31,7 @@ from src.utils.metrics import MetricsTracker
 from src.retraining.tools.dataset_validator import validate_yolo_dataset
 from src.retraining.tools.dvc_version import version_dataset
 from src.retraining.tools.train_yolo import train_yolo
+from src.retraining.tools.upsample import remove_augmented, upsample_dataset
 from src.retraining.tools.mlflow_deploy import deploy_model
 from src.retraining.llm_advisor import get_training_recommendation, collect_dataset_metadata
 from src.retraining.model_registry import ModelRegistry
@@ -53,6 +55,8 @@ class RetrainingState(TypedDict, total=False):
     batch_size: int
     freeze: int                  # user-supplied override (None = let LLM decide)
     base_model_path: str         # weights to fine-tune from (None = currently active model)
+    upsample: bool               # user opted in to class-balancing upsampling
+    upsample_target_ratio: float # fraction of the largest class to bring others up to
 
     # Export
     export_result: dict
@@ -65,6 +69,9 @@ class RetrainingState(TypedDict, total=False):
 
     # LLM Advisor
     llm_recommendation: dict
+
+    # Upsampling
+    upsample_result: dict
 
     # Training
     training_result: dict
@@ -94,6 +101,9 @@ def export_node(state: dict) -> dict:
     try:
         from src.pipeline.orchestrator import ManifestPoller, AnnotationMapper
         import config as cfg
+
+        # Drop the previous run's augmented copies so they are never versioned as real data
+        remove_augmented()
 
         poller = ManifestPoller()
         named = poller.check_named_clusters()
@@ -217,6 +227,68 @@ def llm_advisor_node(state: dict) -> dict:
         return {"llm_recommendation": {"should_train": True, "config": {}, "reason": f"LLM unavailable: {e}"}}
 
 
+def upsample_node(state: dict) -> dict:
+    """
+    Optional class-balancing upsampling (user opt-in), just before training.
+
+    Writes augmented copies of train images that contain minority classes.
+    When the user has not opted in, only reports whether the advisor
+    recommended it.
+    """
+    from src.utils import LogStream
+
+    if _metrics:
+        _metrics.start_step("upsample_dataset")
+
+    rec = state.get("llm_recommendation", {}) or {}
+    if not state.get("upsample"):
+        if rec.get("recommend_upsampling"):
+            LogStream.emit(
+                "[Upsampling] The advisor recommends upsampling minority classes "
+                f"({rec.get('upsampling_reason', '')}). Not applied because it is turned off; "
+                "enable it on the FineTuning page for the next run.",
+                level="warning", source="upsample",
+            )
+        if _metrics:
+            _metrics.end_step("upsample_dataset", items_processed=0, enabled=False,
+                              advisor_recommended=bool(rec.get("recommend_upsampling")))
+        return {"upsample_result": {"enabled": False}}
+
+    if rec and not rec.get("should_train", True):
+        if _metrics:
+            _metrics.end_step("upsample_dataset", items_processed=0, enabled=True,
+                              skipped="advisor decided not to train")
+        return {"upsample_result": {"enabled": True, "skipped": "advisor decided not to train"}}
+
+    try:
+        LogStream.emit("[Upsampling] Balancing classes in the training split...", level="step", source="upsample")
+        result = upsample_dataset(target_ratio=state.get("upsample_target_ratio"))
+        result["enabled"] = True
+        capped = (
+            f". Capped at {result['max_factor']:g}x their original count: {result['capped_classes']}"
+            if result["capped_classes"] else ""
+        )
+        LogStream.emit(
+            f"[Upsampling] Added {result['generated_images']} augmented images. "
+            f"Boxes per class: {result['before']} -> {result['after']}{capped}",
+            level="info", source="upsample",
+        )
+        if _metrics:
+            _metrics.end_step("upsample_dataset", items_processed=result["generated_images"],
+                              enabled=True, before=result["before"], after=result["after"],
+                              target_ratio=result["target_ratio"], capped_classes=result["capped_classes"])
+        return {"upsample_result": result}
+    except Exception as e:
+        # Training still runs on the real data; the failure is visible in the run detail.
+        remove_augmented()
+        log.error(f"Upsampling failed, training on the original data: {e}")
+        LogStream.emit(f"[Upsampling] Failed ({e}); training on the original data instead.",
+                       level="error", source="upsample")
+        if _metrics:
+            _metrics.fail_step("upsample_dataset", str(e))
+        return {"upsample_result": {"enabled": True, "error": str(e)}}
+
+
 def train_node(state: dict) -> dict:
     """Fine-tune YOLO model with LLM-recommended or user-specified params."""
     if _metrics:
@@ -295,6 +367,7 @@ def train_node(state: dict) -> dict:
                         "total_crops": metadata.get("total_crops", 0),
                         "num_classes": metadata.get("num_classes", 0),
                         "classes": metadata.get("classes", {}),
+                        "upsampling": state.get("upsample_result", {"enabled": False}),
                     },
                 )
             except Exception as reg_err:
@@ -494,6 +567,7 @@ def build_retraining_graph():
     graph.add_node("validate_dataset", validate_node)
     graph.add_node("version_dataset", version_dataset_node)
     graph.add_node("llm_advisor", llm_advisor_node)
+    graph.add_node("upsample_dataset", upsample_node)
     graph.add_node("train_yolo", train_node)
     graph.add_node("deploy_model", deploy_node)
     graph.add_node("sync_registry", sync_registry_node)
@@ -507,7 +581,8 @@ def build_retraining_graph():
         {"version_dataset": "version_dataset", END: END},
     )
     graph.add_edge("version_dataset", "llm_advisor")
-    graph.add_edge("llm_advisor", "train_yolo")
+    graph.add_edge("llm_advisor", "upsample_dataset")
+    graph.add_edge("upsample_dataset", "train_yolo")
     graph.add_conditional_edges(
         "train_yolo",
         should_continue_after_training,
@@ -526,12 +601,16 @@ def run_retraining_pipeline(
     batch_size: int | None = None,
     freeze: int | None = None,
     base_model_path: str | None = None,
+    upsample: bool = False,
+    upsample_target_ratio: float | None = None,
 ) -> dict:
     """Run the retraining pipeline; refuses to start if one is already running."""
     if not _run_lock.acquire(blocking=False):
         raise RuntimeError("A retraining run is already in progress.")
     try:
-        return _run_retraining_pipeline(project_id, epochs, imgsz, batch_size, freeze, base_model_path)
+        return _run_retraining_pipeline(
+            project_id, epochs, imgsz, batch_size, freeze, base_model_path, upsample, upsample_target_ratio
+        )
     finally:
         _run_lock.release()
 
@@ -543,6 +622,8 @@ def _run_retraining_pipeline(
     batch_size: int | None = None,
     freeze: int | None = None,
     base_model_path: str | None = None,
+    upsample: bool = False,
+    upsample_target_ratio: float | None = None,
 ) -> dict:
     """
     Run the complete retraining pipeline.
@@ -554,6 +635,8 @@ def _run_retraining_pipeline(
         batch_size:      Training batch size override
         freeze:          Backbone freeze depth override (None = let LLM decide)
         base_model_path: Weights to fine-tune from (None = currently active model)
+        upsample:        Run the class-balancing upsampling stage before training
+        upsample_target_ratio: Fraction of the largest class to bring others up to
 
     Returns:
         Final state dict with all step results.
@@ -567,6 +650,7 @@ def _run_retraining_pipeline(
         "run_id": run_id,
         "project_id": project_id or -1,
         "errors": [],
+        "upsample": upsample,
     }
     # Only set when the caller explicitly overrode them — leaving them unset
     # lets train_node's "user params -> LLM config -> config defaults" merge
@@ -582,6 +666,8 @@ def _run_retraining_pipeline(
         initial_state["freeze"] = freeze
     if base_model_path is not None:
         initial_state["base_model_path"] = base_model_path
+    if upsample_target_ratio is not None:
+        initial_state["upsample_target_ratio"] = upsample_target_ratio
 
     log.info(f"═══ Starting retraining pipeline: {run_id} ═══")
 

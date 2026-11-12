@@ -175,3 +175,28 @@ export interface WsFrame<T = unknown> {
   event: string;
   data: T;
 }
+
+export interface ClassBalance {
+  imbalance_ratio: number;
+  largest_class?: string;
+  minority_classes: string[];
+  suggest_upsampling: boolean;
+  max_factor: number;
+}
+
+export interface AdvisorPreview {
+  metadata: {
+    classes: Record<string, number>;
+    num_classes: number;
+    total_crops: number;
+    class_balance: ClassBalance;
+  };
+  recommendation: {
+    should_train: boolean;
+    reason: string;
+    config: { epochs?: number; batch?: number; freeze?: number | null; optimizer?: string };
+    augmentation_notes: string;
+    recommend_upsampling: boolean;
+    upsampling_reason: string;
+  };
+}

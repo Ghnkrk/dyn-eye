@@ -172,6 +172,54 @@ class AnnotationMapper:
             log.info(f"Replay: added {added} known-class images as pseudo-labelled samples")
         return added
 
+    @staticmethod
+    def _add_external_samples(
+        samples: dict[str, dict], label_names: list[str], label_to_idx: dict[str, int]
+    ) -> int:
+        """
+        Add externally labelled YOLO datasets (e.g. Roboflow exports) from
+        cfg.EXTERNAL_DATASETS_DIR/<name>/ with their own data.yaml.
+
+        Class ids are remapped by name on every export, so they stay correct
+        however the dataset's class order changes; unseen names are appended.
+        Each sample keeps its source split (train→train, valid→val; test is
+        left out), so augmented copies never end up in validation.
+        """
+        import yaml
+
+        root = cfg.EXTERNAL_DATASETS_DIR
+        if not root.exists():
+            return 0
+        added = 0
+        for ds in sorted(p for p in root.iterdir() if (p / "data.yaml").exists()):
+            names = (yaml.safe_load((ds / "data.yaml").read_text(encoding="utf-8")) or {}).get("names", [])
+            if isinstance(names, dict):
+                names = [names[k] for k in sorted(names)]
+            for src_split, dst_split in (("train", "train"), ("valid", "val")):
+                img_dir, lbl_dir = ds / src_split / "images", ds / src_split / "labels"
+                if not img_dir.exists():
+                    continue
+                for img in list_images(img_dir):
+                    lbl = lbl_dir / f"{img.stem}.txt"
+                    if not lbl.exists() or img.stem in samples:
+                        continue
+                    lines = []
+                    for raw in lbl.read_text(encoding="utf-8").splitlines():
+                        parts = raw.split()
+                        if len(parts) != 5 or int(parts[0]) >= len(names):
+                            continue
+                        name = names[int(parts[0])]
+                        if name not in label_to_idx:
+                            label_names.append(name)
+                            label_to_idx[name] = len(label_names) - 1
+                        lines.append(" ".join([str(label_to_idx[name])] + parts[1:]))
+                    if lines:
+                        samples[img.stem] = {"src": img, "lines": lines, "split": dst_split}
+                        added += 1
+        if added:
+            log.info(f"External datasets: added {added} labelled images from {root}")
+        return added
+
     def map_cluster_labels_to_yolo(
         self,
         cluster_labels: dict[str, str],
@@ -242,18 +290,21 @@ class AnnotationMapper:
 
         # ── Replay: known images + current-model detections as pseudo-labels ──
         replay_images = self._add_replay_samples(samples, label_to_idx)
+        external_images = self._add_external_samples(samples, label_names, label_to_idx)
 
         # ── Pass 2: deterministic train/val split (~20% val) ──
         # Hash-based so an image keeps its split as the dataset grows.
+        # External samples keep the split they came with.
         def _bucket(stem: str) -> int:
             return int(hashlib.md5(stem.encode()).hexdigest(), 16) % 5
 
-        stems = sorted(samples)
+        stems = sorted(s for s, e in samples.items() if "split" not in e)
         val_stems: set[str] = set()
         if len(stems) >= 5:
             val_stems = {s for s in stems if _bucket(s) == 0}
             if not val_stems:  # guarantee a non-empty val set
                 val_stems = {min(stems, key=lambda s: hashlib.md5(s.encode()).hexdigest())}
+        val_stems |= {s for s, e in samples.items() if e.get("split") == "val"}
 
         total_images = 0
         for stem, entry in samples.items():
@@ -297,6 +348,7 @@ class AnnotationMapper:
             "total_mapped": total_mapped,
             "total_images": total_images,
             "replay_images": replay_images,
+            "external_images": external_images,
             "label_names": label_names,
         }
 

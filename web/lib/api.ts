@@ -3,6 +3,7 @@
 // Requests go to /api/v2/* which next.config.ts rewrites to the backend
 // (same-origin from the browser's point of view, no CORS involved).
 import type {
+  AdvisorPreview,
   ClusterManifest,
   ClustersResponse,
   DeploymentEvent,
@@ -77,11 +78,10 @@ export const pipelineApi = {
     batch_size?: number | null;
     freeze?: number | null;
     base_model_path?: string | null;
+    upsample?: boolean;
+    upsample_target_ratio?: number | null;
   }) => postJson<{ message: string; status: string }>("/pipeline/retraining/smart-trigger", body),
-  advisorPreview: () =>
-    request<{ metadata: Record<string, unknown>; recommendation: Record<string, unknown> }>(
-      "/pipeline/retraining/advisor-preview"
-    ),
+  advisorPreview: () => request<AdvisorPreview>("/pipeline/retraining/advisor-preview"),
   startOrchestrator: (projectId?: number | null) =>
     postJson<{ message: string }>("/pipeline/orchestrator/start", { project_id: projectId ?? null }),
   stopOrchestrator: () => postJson<{ message: string }>("/pipeline/orchestrator/stop"),

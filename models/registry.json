@@ -3,10 +3,10 @@
     {
       "version_id": "v1_initial",
       "version_num": 1,
-      "path": "C:\\Users\\ahamr\\Desktop\\FYP\\dyn-eye\\models\\versions\\best_v1_initial.pt",
-      "original_path": "C:\\Users\\ahamr\\Desktop\\FYP\\dyn-eye\\models\\best_initial.pt",
-      "timestamp": "20261027_103304",
-      "created_at": "2026-10-27T10:33:04.538885+00:00",
+      "path": "C:\\Users\\ahamr\\Desktop\\Projects\\Ongoing\\FYP\\dyn-eye\\models\\versions\\best_v1_initial.pt",
+      "original_path": "C:\\Users\\ahamr\\Desktop\\Projects\\Ongoing\\FYP\\dyn-eye\\models\\best_initial.pt",
+      "timestamp": "20261110_165636",
+      "created_at": "2026-11-10T16:56:36.767712+00:00",
       "metrics": {},
       "training_config": {},
       "source": "factory_reset",
@@ -24,87 +24,20 @@
       "status": "retired"
     },
     {
-      "version_id": "v2_20261027_114900",
+      "version_id": "v2_20261111_115849",
       "version_num": 2,
-      "path": "C:\\Users\\ahamr\\Desktop\\FYP\\dyn-eye\\models\\versions\\best_v2_20261027_114900.pt",
-      "original_path": "C:\\Users\\ahamr\\Desktop\\FYP\\dyn-eye\\models\\versions\\best_v20261027_171824.pt",
-      "timestamp": "20261027_114900",
-      "created_at": "2026-10-27T11:49:00.370601+00:00",
+      "path": "C:\\Users\\ahamr\\Desktop\\Projects\\Ongoing\\FYP\\dyn-eye\\models\\versions\\best_v2_20261111_115849.pt",
+      "original_path": "C:\\Users\\ahamr\\Desktop\\Projects\\Ongoing\\FYP\\dyn-eye\\models\\versions\\best_v20261111_172750.pt",
+      "timestamp": "20261111_115849",
+      "created_at": "2026-11-11T11:58:49.383868+00:00",
       "metrics": {
-        "map50": 0.17062343852728468,
-        "map50_95": 0.07686649252803099,
-        "precision": 0.0044705760464152505,
-        "recall": 0.5
+        "map50": 0.22891560276863157,
+        "map50_95": 0.07149470713001001,
+        "precision": 0.9702717985160731,
+        "recall": 0.16666666666666666
       },
       "training_config": {
         "epochs": 20,
-        "imgsz": 640,
-        "batch": 8,
-        "lr0": 0.01,
-        "lrf": 0.01,
-        "momentum": 0.937,
-        "weight_decay": 0.0005,
-        "warmup_epochs": 3.0,
-        "patience": 15,
-        "optimizer": "SGD",
-        "cos_lr": false,
-        "freeze": 22,
-        "augment": true,
-        "mosaic": 1.0,
-        "mixup": 0.15,
-        "degrees": 10.0,
-        "translate": 0.1,
-        "scale": 0.5,
-        "flipud": 0.5,
-        "fliplr": 0.5,
-        "hsv_h": 0.015,
-        "hsv_s": 0.7,
-        "hsv_v": 0.4
-      },
-      "source": "llm-advised-finetuning",
-      "notes": "Total dataset size is 30 crops, which is below the ideal 10-per-class threshold (especially for 'Dirt accumulation' with only 2 samples). However, training is feasible using heavy data augmentation and freezing the majority of the backbone to prevent overfitting. The model will act as a fine-tuned detector relying on pre-learned features.",
-      "classes": [
-        "Streak mark",
-        "Polish spot",
-        "Dirt accumulation",
-        "Oil spillage",
-        "Crate",
-        "inclusion",
-        "oil_spot",
-        "punching_hole",
-        "silk_spot",
-        "water_spot",
-        "welding_line"
-      ],
-      "dataset_stats": {
-        "total_crops": 30,
-        "num_classes": 5,
-        "classes": {
-          "Streak mark": 7,
-          "Polish spot": 8,
-          "Dirt accumulation": 2,
-          "Oil spillage": 6,
-          "Crate": 7
-        }
-      },
-      "size_mb": 48.81,
-      "status": "retired"
-    },
-    {
-      "version_id": "v3_20261104_164005",
-      "version_num": 3,
-      "path": "C:\\Users\\ahamr\\Desktop\\Projects\\Ongoing\\FYP\\dyn-eye\\models\\versions\\best_v3_20261104_164005.pt",
-      "original_path": "C:\\Users\\ahamr\\Desktop\\Projects\\Ongoing\\FYP\\dyn-eye\\models\\versions\\best_v20261104_220811.pt",
-      "timestamp": "20261104_164005",
-      "created_at": "2026-11-04T16:40:05.954837+00:00",
-      "metrics": {
-        "map50": 0.2245606646628903,
-        "map50_95": 0.08687467244009286,
-        "precision": 0.6729314485254912,
-        "recall": 0.20454545454545456
-      },
-      "training_config": {
-        "epochs": 40,
         "imgsz": 640,
         "batch": 16,
         "lr0": 0.008,
@@ -115,7 +48,7 @@
         "patience": 15,
         "optimizer": "AdamW",
         "cos_lr": true,
-        "freeze": 12,
+        "freeze": 18,
         "augment": true,
         "mosaic": 1.0,
         "mixup": 0.15,
@@ -129,11 +62,10 @@
         "hsv_v": 0.4
       },
       "source": "llm-advised-finetuning",
-      "notes": "Dataset has 162 crops across 3 classes (min 27/class). Sufficient for fine-tuning with augmentation.",
+      "notes": "Dataset has 64 crops across 2 classes (min 12/class). Sufficient for fine-tuning with augmentation.",
       "classes": [
-        "Dark spots",
-        "Streak marks",
-        "Oil spill",
+        "rolled_pit",
+        "waist_folding",
         "inclusion",
         "oil_spot",
         "punching_hole",
@@ -142,31 +74,155 @@
         "welding_line"
       ],
       "dataset_stats": {
-        "total_crops": 162,
-        "num_classes": 3,
+        "total_crops": 64,
+        "num_classes": 2,
         "classes": {
-          "Dark spots": 44,
-          "Streak marks": 91,
-          "Oil spill": 27
+          "rolled_pit": 52,
+          "waist_folding": 12
+        },
+        "upsampling": {
+          "target_ratio": 1.0,
+          "max_factor": 3.0,
+          "allow_rotate90": false,
+          "before": {
+            "rolled_pit": 46,
+            "waist_folding": 9
+          },
+          "after": {
+            "rolled_pit": 46,
+            "waist_folding": 27
+          },
+          "generated_images": 6,
+          "classes_upsampled": [
+            "waist_folding"
+          ],
+          "capped_classes": [
+            "waist_folding"
+          ],
+          "enabled": true
         }
       },
-      "size_mb": 48.8,
+      "size_mb": 48.81,
+      "status": "retired"
+    },
+    {
+      "version_id": "v3_20261111_130155",
+      "version_num": 3,
+      "path": "C:\\Users\\ahamr\\Desktop\\Projects\\Ongoing\\FYP\\dyn-eye\\models\\versions\\best_v3_20261111_130155.pt",
+      "original_path": "C:\\Users\\ahamr\\Desktop\\Projects\\Ongoing\\FYP\\dyn-eye\\models\\versions\\best_v20261111_182324.pt",
+      "timestamp": "20261111_130155",
+      "created_at": "2026-11-11T13:01:55.890833+00:00",
+      "metrics": {
+        "map50": 0.18512839390576427,
+        "map50_95": 0.06471250254010273,
+        "precision": 0.5976536674662756,
+        "recall": 0.29318181818181815
+      },
+      "training_config": {
+        "epochs": 60,
+        "imgsz": 640,
+        "batch": 16,
+        "lr0": 0.008,
+        "lrf": 0.01,
+        "momentum": 0.937,
+        "weight_decay": 0.0005,
+        "warmup_epochs": 3.0,
+        "patience": 15,
+        "optimizer": "AdamW",
+        "cos_lr": true,
+        "freeze": 10,
+        "augment": true,
+        "mosaic": 1.0,
+        "mixup": 0.15,
+        "degrees": 15.0,
+        "translate": 0.2,
+        "scale": 0.5,
+        "flipud": 0.5,
+        "fliplr": 0.5,
+        "hsv_h": 0.015,
+        "hsv_s": 0.7,
+        "hsv_v": 0.4
+      },
+      "source": "llm-advised-finetuning",
+      "notes": "Dataset has 64 crops across 2 classes (min 12/class). Sufficient for fine-tuning with augmentation.",
+      "classes": [
+        "rolled_pit",
+        "waist_folding",
+        "inclusion",
+        "oil_spot",
+        "punching_hole",
+        "silk_spot",
+        "water_spot",
+        "welding_line"
+      ],
+      "dataset_stats": {
+        "total_crops": 64,
+        "num_classes": 2,
+        "classes": {
+          "rolled_pit": 52,
+          "waist_folding": 12
+        },
+        "upsampling": {
+          "target_ratio": 0.5,
+          "max_factor": 3.0,
+          "allow_rotate90": false,
+          "before": {
+            "inclusion": 9,
+            "punching_hole": 3,
+            "rolled_pit": 76,
+            "silk_spot": 3,
+            "waist_folding": 267,
+            "water_spot": 6,
+            "welding_line": 6,
+            "crease": 84
+          },
+          "after": {
+            "inclusion": 27,
+            "punching_hole": 9,
+            "rolled_pit": 135,
+            "silk_spot": 9,
+            "waist_folding": 267,
+            "water_spot": 24,
+            "welding_line": 18,
+            "crease": 135
+          },
+          "generated_images": 91,
+          "classes_upsampled": [
+            "punching_hole",
+            "silk_spot",
+            "water_spot",
+            "welding_line",
+            "inclusion",
+            "rolled_pit",
+            "crease"
+          ],
+          "capped_classes": [
+            "inclusion",
+            "punching_hole",
+            "silk_spot",
+            "water_spot",
+            "welding_line"
+          ],
+          "enabled": true
+        }
+      },
+      "size_mb": 48.81,
       "status": "deployed"
     }
   ],
-  "current": "v3_20261104_164005",
+  "current": "v3_20261111_130155",
   "deployment_history": [
     {
-      "version_id": "v2_20261027_114900",
+      "version_id": "v2_20261111_115849",
       "previous_version": "v1_initial",
-      "deployed_at": "2026-10-27T11:49:00.738315+00:00",
+      "deployed_at": "2026-11-11T11:58:49.712986+00:00",
       "confirmed_by": "auto-deploy",
       "action": "deploy"
     },
     {
-      "version_id": "v3_20261104_164005",
-      "previous_version": "v2_20261027_114900",
-      "deployed_at": "2026-11-04T16:40:06.382555+00:00",
+      "version_id": "v3_20261111_130155",
+      "previous_version": "v2_20261111_115849",
+      "deployed_at": "2026-11-11T13:01:56.268699+00:00",
       "confirmed_by": "auto-deploy",
       "action": "deploy"
     }

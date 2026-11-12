@@ -19,6 +19,7 @@ def sandbox(tmp_path, monkeypatch):
         "CROPS_DIR": tmp_path / "crops",
         "CLUSTERS_DIR": tmp_path / "clusters",
         "YOLO_DATASET_DIR": tmp_path / "yolo",
+        "EXTERNAL_DATASETS_DIR": tmp_path / "external",
         "KNOWN_DEFECTS_DIR": tmp_path / "known_crops",
         "KNOWN_REPLAY_JSON": tmp_path / "known_replay.json",
         "CLUSTER_REGISTRY_PATH": tmp_path / "clusters" / "cluster_registry.json",

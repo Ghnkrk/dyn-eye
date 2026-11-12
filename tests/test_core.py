@@ -196,6 +196,36 @@ def test_replay_adds_known_classes_without_overriding_new_labels(sandbox):
     assert r["total_mapped"] == 6  # replay is not counted as new labels
 
 
+def test_external_dataset_is_remapped_by_name_and_keeps_its_split(sandbox):
+    import yaml
+    from src.pipeline.orchestrator import AnnotationMapper
+
+    _make_clusters(sandbox, n=6)
+    ext = sandbox.EXTERNAL_DATASETS_DIR / "rf"
+    # External order differs from ours, and "crease" is a class we don't have yet
+    (ext / "data.yaml").parent.mkdir(parents=True, exist_ok=True)
+    (ext / "data.yaml").write_text(yaml.dump({"names": ["crease", "scratch", "rust"], "nc": 3}))
+    for split, stem, cls in (("train", "rf_a_aug1", 0), ("train", "rf_b", 2), ("valid", "rf_c", 1)):
+        (ext / split / "images").mkdir(parents=True, exist_ok=True)
+        (ext / split / "labels").mkdir(parents=True, exist_ok=True)
+        (ext / split / "images" / f"{stem}.jpg").write_bytes(b"x")
+        (ext / split / "labels" / f"{stem}.txt").write_text(f"{cls} 0.5 0.5 0.1 0.1\n")
+    (ext / "test" / "images").mkdir(parents=True)
+    (ext / "test" / "images" / "rf_t.jpg").write_bytes(b"x")
+
+    r = AnnotationMapper().map_cluster_labels_to_yolo({"c_000": "scratch"}, ["rust"])
+
+    y = yaml.safe_load((sandbox.YOLO_DATASET_DIR / "data.yaml").read_text())
+    assert y["names"] == ["rust", "scratch", "crease"]
+    assert r["external_images"] == 3
+    yolo = sandbox.YOLO_DATASET_DIR
+    assert (yolo / "labels" / "train" / "rf_a_aug1.txt").read_text().startswith("2 ")  # crease
+    assert (yolo / "labels" / "train" / "rf_b.txt").read_text().startswith("0 ")  # rust
+    assert (yolo / "labels" / "val" / "rf_c.txt").read_text().startswith("1 ")  # scratch, kept in val
+    assert not (yolo / "images" / "val" / "rf_a_aug1.jpg").exists()  # augmented copy never in val
+    assert not list(yolo.rglob("rf_t*"))  # external test split left out
+
+
 # ── orchestrator state ───────────────────────────────────────
 
 def test_signature_changes_only_when_state_changes():

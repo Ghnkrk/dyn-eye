@@ -17,6 +17,9 @@ CROPS_DIR = DATA_DIR / "crops"
 CLUSTERS_DIR = DATA_DIR / "clusters"
 FAISS_INDEX_DIR = DATA_DIR / "faiss_index"
 YOLO_DATASET_DIR = DATA_DIR / "yolo_dataset"
+EXTERNAL_DATASETS_DIR = DATA_DIR / "external"  # labelled YOLO datasets merged into every fine-tune
+# Dataset versioning commits + tags the .dvc file in git; set DVC_GIT_COMMIT=0 to skip git entirely
+DVC_GIT_COMMIT = os.environ.get("DVC_GIT_COMMIT", "1").strip().lower() in ("1", "true", "yes")
 UNKNOWN_DEFECTS_JSON = DATA_DIR / "unknown_defects.json"
 KNOWN_DEFECTS_DIR = DATA_DIR / "known_defect_crops"  # For FAISS setup
 SAMPLE_RUN_DIR = DATA_DIR / "samplerun"
@@ -98,9 +101,9 @@ VLM_TEMPERATURE = 0.1
 # Per-image result cache: skip the VLM for images already annotated with the same prompt+model
 VLM_IMAGE_CACHE = _env("VLM_IMAGE_CACHE", "1").lower() in ("1", "true", "yes")
 VLM_IMAGE_CACHE_PATH = DATA_DIR / "vlm_image_cache.json"
-VLM_SLEEP_BETWEEN = 4.5
+VLM_SLEEP_BETWEEN = 4.5   # fixed pause after every image
 VLM_MAX_RETRIES = 5
-VLM_BACKOFF_FACTOR = 2
+VLM_RETRY_WAIT = 10       # fixed pause before each retry (no exponential backoff)
 
 # ============================================================
 # RESNET / FEATURE EXTRACTION
@@ -161,6 +164,15 @@ DASHBOARD_PORT = 8501
 # LLM TRAINING ADVISOR (model + temperature: see LLM_* above)
 # ============================================================
 LLM_MIN_CROPS_PER_CLASS = 10   # Minimum crops per class before LLM considers training
+
+# ============================================================
+# CLASS-BALANCING UPSAMPLING (opt-in stage just before training)
+# ============================================================
+UPSAMPLE_TARGET_RATIO = 1.0         # bring each class up to this fraction of the largest class
+UPSAMPLE_MAX_FACTOR = 3.0           # but never past N× its own original box count
+UPSAMPLE_ALLOW_ROTATE90 = False     # steel defects follow the rolling direction; flips only by default
+UPSAMPLE_SEED = 42                  # same dataset + settings → same augmented images
+UPSAMPLE_IMBALANCE_THRESHOLD = 2.0  # a class with ≤ 1/N of the largest class counts as a minority
 
 # ============================================================
 # YOLO TRAINING DEFAULTS

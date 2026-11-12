@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 import config as cfg
 from src.utils import get_logger
 from src.utils.llm import chat_json, llm_available
+from src.retraining.tools.upsample import class_balance
 
 log = get_logger("llm_advisor")
 
@@ -90,6 +91,7 @@ def collect_dataset_metadata() -> dict:
         "dataset_prepared": dataset_exists,
         "base_model_exists": cfg.YOLO_MODEL_PATH.exists(),
         "total_model_layers": total_model_layers,
+        "class_balance": class_balance(classes),
     }
 
 
@@ -149,6 +151,8 @@ def get_training_recommendation(metadata: dict | None = None) -> dict:
             "reason": reason_no_classes,
             "config": {},
             "augmentation_notes": "",
+            "recommend_upsampling": False,
+            "upsampling_reason": "",
         }
 
     prompt = _build_prompt(metadata)
@@ -174,7 +178,9 @@ def get_training_recommendation(metadata: dict | None = None) -> dict:
                 f"      * learning_rate (lr0): {recommendation['config'].get('lr0', 0.01)}\n"
                 f"      * optimizer: {recommendation['config'].get('optimizer', 'AdamW')}\n"
                 f"      * backbone_freeze: {recommendation['config'].get('freeze', 10)}\n"
-                f"  - augmentation_notes: {recommendation.get('augmentation_notes', 'N/A')}",
+                f"  - augmentation_notes: {recommendation.get('augmentation_notes', 'N/A')}\n"
+                f"  - recommend_upsampling: {recommendation['recommend_upsampling']} "
+                f"({recommendation.get('upsampling_reason', '')})",
                 level="info",
                 source="llm_advisor"
             )
@@ -192,7 +198,9 @@ def get_training_recommendation(metadata: dict | None = None) -> dict:
         f"  - reason: {fallback_rec.get('reason', '')}\n"
         f"  - config (hyperparameters):\n"
         f"      * epochs: {fallback_rec['config'].get('epochs', 1)}\n"
-        f"      * batch_size: {fallback_rec['config'].get('batch', 8)}",
+        f"      * batch_size: {fallback_rec['config'].get('batch', 8)}\n"
+        f"  - recommend_upsampling: {fallback_rec['recommend_upsampling']} "
+        f"({fallback_rec['upsampling_reason']})",
         level="info",
         source="llm_advisor"
     )
@@ -203,6 +211,7 @@ def _build_prompt(metadata: dict) -> str:
     """Build the structured prompt for the LLM."""
     total_model_layers = metadata.get("total_model_layers", 22)  # YOLOv8 has 22 modules
     total_crops = metadata.get("total_crops", 0)
+    balance = metadata.get("class_balance", {})
 
     # Heuristic guidance so the LLM has a starting point for freeze:
     # With few images keep backbone frozen (high freeze), with many unfreeze more.
@@ -222,6 +231,8 @@ def _build_prompt(metadata: dict) -> str:
 - Min crops per class: {metadata['min_crops_per_class']}
 - Max crops per class: {metadata['max_crops_per_class']}
 - Average crops per class: {metadata['avg_crops_per_class']}
+- Class imbalance (largest ÷ smallest class): {balance.get('imbalance_ratio', 1.0)}×
+- Minority classes (≤ 1/{cfg.UPSAMPLE_IMBALANCE_THRESHOLD:g} of the largest class): {balance.get('minority_classes', [])}
 - Base YOLO model exists: {metadata['base_model_exists']}
 - Known defect classes already in system: {metadata['known_defect_names']}
 - Total YOLO backbone+neck modules: {total_model_layers} (backbone layers 0–{total_model_layers-3}, neck+head layers {total_model_layers-2}–{total_model_layers-1})
@@ -274,6 +285,18 @@ Analyze the dataset and provide training recommendations as JSON:
 
 4. `augmentation_notes` (str): Brief notes on augmentation strategy.
 
+5. `recommend_upsampling` (bool): Whether the user should enable the optional
+   class-balancing upsampling stage before training. That stage writes extra
+   augmented copies (flips + brightness/contrast/noise) of training images that
+   contain under-represented classes, so every class has a comparable number of
+   boxes. Recommend it when one or more classes have far fewer boxes than others
+   (e.g. imbalance ratio ≥ {cfg.UPSAMPLE_IMBALANCE_THRESHOLD:g}×) or when a class is so small that the
+   detector is likely to under-fit it, slow convergence, or bias towards the large
+   classes. Do not recommend it for a balanced dataset.
+
+6. `upsampling_reason` (str): One sentence naming the classes and counts behind
+   that decision.
+
 Respond ONLY with valid JSON. No markdown, no explanation outside JSON."""
 
 
@@ -308,12 +331,18 @@ def _validate_recommendation(rec: dict, metadata: dict) -> dict:
             "hsv_v": 0.4,
         },
         "augmentation_notes": "",
+        "recommend_upsampling": metadata.get("class_balance", {}).get("suggest_upsampling", False),
+        "upsampling_reason": "",
     }
 
     # Merge with defaults
     result = {**defaults, **rec}
     if "config" in rec and isinstance(rec["config"], dict):
         result["config"] = {**defaults["config"], **rec["config"]}
+
+    result["recommend_upsampling"] = bool(result["recommend_upsampling"])
+    if not result["upsampling_reason"]:
+        result["upsampling_reason"] = _balance_reason(metadata)
 
     # ── Enforce smart freeze: if freeze is still the generic default (10)
     # and we have enough data, compute a better value from dataset size
@@ -403,4 +432,21 @@ def _heuristic_fallback(metadata: dict) -> dict:
             "Heuristic fallback: heavy augmentation enabled for small dataset. "
             "Backbone partially frozen to prevent overfitting."
         ),
+        "recommend_upsampling": metadata.get("class_balance", {}).get("suggest_upsampling", False),
+        "upsampling_reason": _balance_reason(metadata),
     }
+
+
+def _balance_reason(metadata: dict) -> str:
+    balance = metadata.get("class_balance", {})
+    classes = metadata.get("classes", {})
+    minority = balance.get("minority_classes", [])
+    if not minority:
+        return "Classes are reasonably balanced; upsampling is not needed."
+    largest = balance.get("largest_class")
+    parts = ", ".join(f"{c} ({classes.get(c, 0)})" for c in minority)
+    return (
+        f"{parts} {'has' if len(minority) == 1 else 'have'} at most half as many boxes as "
+        f"{largest} ({classes.get(largest, 0)}), a {balance.get('imbalance_ratio')}× imbalance; "
+        f"upsampling them will reduce bias towards the larger classes."
+    )

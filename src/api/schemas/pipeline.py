@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class DiscoveryRequest(BaseModel):
@@ -15,6 +15,8 @@ class RetrainingRequest(BaseModel):
     batch_size: int | None = None
     freeze: int | None = None
     base_model_path: str | None = None  # weights to fine-tune from; None = currently active model
+    upsample: bool = False  # opt-in class-balancing upsampling before training
+    upsample_target_ratio: float | None = Field(None, gt=0, le=1)  # None = config default
 
 
 class SmartRetrainRequest(BaseModel):
@@ -23,6 +25,8 @@ class SmartRetrainRequest(BaseModel):
     batch_size: int | None = None
     freeze: int | None = None  # user override; None = let LLM decide
     base_model_path: str | None = None  # weights to fine-tune from; None = currently active model
+    upsample: bool = False  # opt-in class-balancing upsampling before training
+    upsample_target_ratio: float | None = Field(None, gt=0, le=1)  # None = config default
 
 
 class OrchestratorRequest(BaseModel):
