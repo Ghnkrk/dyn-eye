@@ -7,6 +7,7 @@ import "./globals.css";
 import { Sidebar } from "@/components/layout/sidebar";
 import { Topbar } from "@/components/layout/topbar";
 import { Toaster } from "@/components/ui/sonner";
+import { PageAttentionBanner } from "@/components/layout/attention";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -36,7 +37,10 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
             <Sidebar />
             <div className="flex min-w-0 flex-1 flex-col">
               <Topbar />
-              <main className="flex-1 overflow-y-auto p-6">{children}</main>
+              <main className="flex-1 overflow-y-auto p-6">
+                <PageAttentionBanner />
+                {children}
+              </main>
             </div>
           </div>
           <Toaster />

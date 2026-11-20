@@ -148,6 +148,71 @@ async def list_runs(limit: int = 50):
     return results
 
 
+# Static DAG shapes (mirrors build graphs in src/pipeline/graph.py and
+# src/retraining/agent.py). "gate" marks an edge that ends the run early when
+# the step produces nothing (or fails), as in the LangGraph conditional edges.
+_DAGS = {
+    "discovery": {
+        "nodes": [
+            ("yolo_inference", "YOLO routing"),
+            ("dataset_context", "Dataset context"),
+            ("vlm_annotation", "VLM annotation"),
+            ("crop_extraction", "Crop extraction"),
+            ("feature_extraction", "DINOv2 features"),
+            ("faiss_search", "FAISS novelty"),
+            ("hdbscan_cluster", "HDBSCAN clustering"),
+            ("manifest_save", "Save manifest"),
+        ],
+        "gates": {"yolo_inference": "no unknown images", "vlm_annotation": "no annotations",
+                  "crop_extraction": "no crops", "faiss_search": "no novel crops"},
+    },
+    "retraining": {
+        "nodes": [
+            ("export_annotations", "Export dataset"),
+            ("validate_dataset", "Validate"),
+            ("version_dataset", "DVC version"),
+            ("llm_advisor", "LLM advisor"),
+            ("upsample_dataset", "Upsampling"),
+            ("train_yolo", "Train YOLO"),
+            ("deploy_model", "Deploy"),
+            ("sync_registry", "Sync registry"),
+        ],
+        "gates": {"validate_dataset": "validation failed", "train_yolo": "below deploy gate"},
+    },
+}
+
+
+@router.get("/graph/{kind}")
+async def get_graph(kind: str):
+    """DAG of a pipeline with each step's state in its latest run (live while running)."""
+    if kind not in _DAGS:
+        raise HTTPException(404, f"Unknown pipeline {kind}")
+    import config as cfg
+
+    run_ids = [r for r in MetricsTracker.list_runs()
+               if r.startswith("retrain_") == (kind == "retraining")]
+    steps: dict = {}
+    run_id = None
+    if run_ids:
+        # Newest by file time: the run being written right now is touched last
+        run_id = max(run_ids, key=lambda r: (cfg.PIPELINE_RUNS_DIR / f"{r}.json").stat().st_mtime)
+        try:
+            steps = MetricsTracker.load_run(run_id).get("steps", {})
+        except Exception:
+            steps = {}
+    live = pipeline_service.get_status()[kind]
+    return {
+        "kind": kind,
+        "run_id": run_id,
+        "run_status": live.get("status", "idle"),
+        "started_at": live.get("started_at"),
+        "error": live.get("error"),
+        "nodes": [{"id": n, "label": label, "gate": _DAGS[kind]["gates"].get(n)}
+                  for n, label in _DAGS[kind]["nodes"]],
+        "steps": steps,
+    }
+
+
 @router.get("/runs/{run_id}")
 async def get_run(run_id: str):
     with get_session() as session:

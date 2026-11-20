@@ -224,6 +224,8 @@ def test_external_dataset_is_remapped_by_name_and_keeps_its_split(sandbox):
     assert (yolo / "labels" / "val" / "rf_c.txt").read_text().startswith("1 ")  # scratch, kept in val
     assert not (yolo / "images" / "val" / "rf_a_aug1.jpg").exists()  # augmented copy never in val
     assert not list(yolo.rglob("rf_t*"))  # external test split left out
+    sources = json.loads((yolo / "sources.json").read_text())
+    assert sources["rf_b"] == "external:rf" and sources["im0"] == "cluster"
 
 
 # ── orchestrator state ───────────────────────────────────────

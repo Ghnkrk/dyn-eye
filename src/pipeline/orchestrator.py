@@ -166,7 +166,7 @@ class AnnotationMapper:
                 cx, cy, w, h = d["bbox_xywhn"]
                 lines.append(f"{idx} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
             if lines:
-                samples[src.stem] = {"src": src, "lines": lines}
+                samples[src.stem] = {"src": src, "lines": lines, "source": "replay"}
                 added += 1
         if added:
             log.info(f"Replay: added {added} known-class images as pseudo-labelled samples")
@@ -214,7 +214,8 @@ class AnnotationMapper:
                             label_to_idx[name] = len(label_names) - 1
                         lines.append(" ".join([str(label_to_idx[name])] + parts[1:]))
                     if lines:
-                        samples[img.stem] = {"src": img, "lines": lines, "split": dst_split}
+                        samples[img.stem] = {"src": img, "lines": lines, "split": dst_split,
+                                             "source": f"external:{ds.name}"}
                         added += 1
         if added:
             log.info(f"External datasets: added {added} labelled images from {root}")
@@ -283,7 +284,7 @@ class AnnotationMapper:
                     continue
 
                 line = f"{label_idx} {bbox[0]:.6f} {bbox[1]:.6f} {bbox[2]:.6f} {bbox[3]:.6f}"
-                entry = samples.setdefault(src_img.stem, {"src": src_img, "lines": []})
+                entry = samples.setdefault(src_img.stem, {"src": src_img, "lines": [], "source": "cluster"})
                 if line not in entry["lines"]:
                     entry["lines"].append(line)
                     total_mapped += 1
@@ -336,6 +337,8 @@ class AnnotationMapper:
             yaml.dump(data_yaml, default_flow_style=False),
             encoding="utf-8",
         )
+        # Where each image came from (cluster / replay / external:<dataset>), for the Upsampling viewer
+        save_json({stem: e.get("source", "cluster") for stem, e in samples.items()}, yolo_dir / "sources.json")
 
         LogStream.emit(
             f"Mapped {total_mapped} annotations across {total_images} images "

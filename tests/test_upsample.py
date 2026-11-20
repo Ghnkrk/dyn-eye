@@ -151,3 +151,81 @@ def test_upsample_stage_sits_between_advisor_and_training():
     assert ("llm_advisor", "upsample_dataset") in edges
     assert ("upsample_dataset", "train_yolo") in edges
     assert ("llm_advisor", "train_yolo") not in edges
+
+
+# ── Upsampling page: dry run, manifest, options, saved settings ──
+
+def _imbalanced(root, sources=None):
+    big = [(f"a{i}", [(0, (0.5, 0.5, 0.2, 0.2))]) for i in range(12)]
+    small = [(f"b{i}", [(1, (0.3, 0.3, 0.2, 0.2))]) for i in range(2)]
+    mid = [(f"c{i}", [(2, (0.6, 0.6, 0.2, 0.2))]) for i in range(8)]
+    _dataset(root, ["big", "small", "mid"], big + small + mid)
+    if sources:
+        (root / "sources.json").write_text(__import__("json").dumps(sources))
+
+
+def test_dry_run_matches_real_run_and_writes_nothing(tmp_path):
+    root = tmp_path / "yolo"
+    _imbalanced(root)
+    files_before = sorted(p.name for p in (root / "images" / "train").iterdir())
+
+    dry = up.upsample_dataset(target_ratio=0.5, dataset_dir=root, dry_run=True)
+    assert sorted(p.name for p in (root / "images" / "train").iterdir()) == files_before
+    assert not (root / up.MANIFEST_NAME).exists()
+
+    real = up.upsample_dataset(target_ratio=0.5, dataset_dir=root)
+    assert dry["after"] == real["after"] and dry["generated_images"] == real["generated_images"] > 0
+
+
+def test_manifest_links_each_copy_to_its_source_and_origin(tmp_path):
+    root = tmp_path / "yolo"
+    _imbalanced(root, sources={"b0": "cluster", "b1": "external:rf"})
+    up.upsample_dataset(target_ratio=0.5, dataset_dir=root)
+
+    m = up.load_manifest(root)
+    assert m["images"] and {e["for_class"] for e in m["images"]} == {"small"}
+    for e in m["images"]:
+        assert (root / "images" / "train" / e["image"]).exists()
+        assert e["source_image"] in ("b0.jpg", "b1.jpg")
+        assert e["origin"] == {"b0.jpg": "cluster", "b1.jpg": "external:rf"}[e["source_image"]]
+        assert e["geometric"] in ("hflip", "vflip", "rot180")
+
+    up.remove_augmented(root)
+    assert up.load_manifest(root) == {}
+
+
+def test_imbalance_threshold_decides_which_classes_are_upsampled(tmp_path):
+    root = tmp_path / "yolo"
+    _imbalanced(root)  # big 12, mid 8 (1.5x smaller), small 2 (6x smaller)
+    strict = up.upsample_dataset(target_ratio=1.0, imbalance_threshold=2.0, dataset_dir=root, dry_run=True)
+    assert strict["minority_classes"] == ["small"]
+    assert strict["after"]["mid"] == 8  # not a minority at threshold 2: left alone
+
+    loose = up.upsample_dataset(target_ratio=1.0, imbalance_threshold=1.2, dataset_dir=root, dry_run=True)
+    assert loose["minority_classes"] == ["mid", "small"]
+    assert loose["after"]["mid"] > 8
+
+
+def test_disabled_transforms_are_never_used(tmp_path):
+    root = tmp_path / "yolo"
+    _imbalanced(root)
+    tf = {"hflip": True, "vflip": False, "rot180": False, "blur": False, "noise": False, "gamma": False}
+    up.upsample_dataset(target_ratio=0.5, transforms=tf, dataset_dir=root)
+    entries = up.load_manifest(root)["images"]
+    assert entries and {e["geometric"] for e in entries} <= {"hflip", "none"}
+    assert all(set(e["photometric"]) <= {"contrast"} for e in entries)
+
+    with pytest.raises(ValueError):
+        up.upsample_dataset(transforms={k: False for k in up.default_transforms()}, dataset_dir=root)
+
+
+def test_settings_roundtrip_fill_defaults_and_reject_bad_values(sandbox):
+    assert up.load_settings() == up.default_settings()
+    saved = up.save_settings({"enabled": True, "target_ratio": 0.75, "transforms": {"rot90": True}})
+    assert saved["enabled"] and saved["target_ratio"] == 0.75
+    assert saved["transforms"]["rot90"] and saved["transforms"]["hflip"]  # untouched keys keep defaults
+    assert up.load_settings() == saved
+    for bad in ({"target_ratio": 0}, {"max_factor": 0.5}, {"imbalance_threshold": 0.9},
+                {"transforms": {k: False for k in up.default_transforms()}}):
+        with pytest.raises(ValueError):
+            up.save_settings(bad)

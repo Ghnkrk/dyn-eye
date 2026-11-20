@@ -15,7 +15,7 @@ class RetrainingRequest(BaseModel):
     batch_size: int | None = None
     freeze: int | None = None
     base_model_path: str | None = None  # weights to fine-tune from; None = currently active model
-    upsample: bool = False  # opt-in class-balancing upsampling before training
+    upsample: bool | None = None  # None = use the saved Upsampling page settings
     upsample_target_ratio: float | None = Field(None, gt=0, le=1)  # None = config default
 
 
@@ -25,7 +25,7 @@ class SmartRetrainRequest(BaseModel):
     batch_size: int | None = None
     freeze: int | None = None  # user override; None = let LLM decide
     base_model_path: str | None = None  # weights to fine-tune from; None = currently active model
-    upsample: bool = False  # opt-in class-balancing upsampling before training
+    upsample: bool | None = None  # None = use the saved Upsampling page settings
     upsample_target_ratio: float | None = Field(None, gt=0, le=1)  # None = config default
 
 

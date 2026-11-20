@@ -3,11 +3,13 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import { useNavAttention } from "@/components/layout/attention";
 import { NAV_ITEMS } from "@/components/layout/nav-items";
 import { cn } from "@/lib/utils";
 
 export function Sidebar() {
   const pathname = usePathname();
+  const attention = useNavAttention();
 
   return (
     <aside className="hidden w-56 flex-col border-r bg-sidebar p-4 md:flex">
@@ -18,6 +20,7 @@ export function Sidebar() {
       <nav className="flex flex-col gap-1">
         {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
           const active = href === "/" ? pathname === "/" : pathname.startsWith(href);
+          const waiting = attention(href);
           return (
             <Link
               key={href}
@@ -29,6 +32,15 @@ export function Sidebar() {
             >
               <Icon className="h-4 w-4" />
               {label}
+              {waiting && (
+                <span
+                  title={waiting === "blocking" ? "Needs your input" : "Recommended action waiting"}
+                  className={cn(
+                    "ml-auto h-2 w-2 rounded-full",
+                    waiting === "blocking" ? "bg-destructive" : "bg-amber-500"
+                  )}
+                />
+              )}
             </Link>
           );
         })}

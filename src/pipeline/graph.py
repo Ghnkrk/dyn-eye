@@ -88,7 +88,7 @@ def _wrap_node(name: str, fn):
                         break
 
             if _metrics:
-                _metrics.end_step(name, items_processed=items)
+                _metrics.end_step(name, items_processed=items, cached=bool(result.get("_cached", False)))
 
             # Check if this was a cached skip
             cached = result.get("_cached", False)

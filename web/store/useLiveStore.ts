@@ -53,6 +53,9 @@ export const useLiveStore = create<LiveState>((set, get) => ({
         return;
       }
 
+      // Anything but a log line can change what needs the user's input
+      if (frame.topic !== "logs") queryClient.invalidateQueries({ queryKey: ["attention"] });
+
       switch (frame.topic) {
         case "logs": {
           const next = [...get().logs, frame.data as LogEvent].slice(-MAX_LOGS);

@@ -8,51 +8,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { modelsApi, pipelineApi } from "@/lib/api";
-import type { AdvisorPreview } from "@/lib/types";
+import { modelsApi, pipelineApi, upsamplingApi } from "@/lib/api";
 import { useLiveStore } from "@/store/useLiveStore";
-
-const TARGET_LABELS: Record<string, string> = {
-  "1": "the size of the largest class",
-  "0.75": "75% of the largest class",
-  "0.5": "50% of the largest class",
-};
-
-function ClassBars({ preview }: { preview: AdvisorPreview }) {
-  const { classes, class_balance: balance } = preview.metadata;
-  const entries = Object.entries(classes).sort((a, b) => b[1] - a[1]);
-  const largest = Math.max(1, ...entries.map(([, n]) => n));
-  const minority = new Set(balance.minority_classes);
-
-  if (entries.length === 0) {
-    return <p className="text-sm text-muted-foreground">No named clusters yet. Name clusters on the Clusters page first.</p>;
-  }
-
-  return (
-    <ul className="flex flex-col gap-2">
-      {entries.map(([name, n]) => (
-        <li key={name} className="flex flex-col gap-1">
-          <div className="flex items-baseline justify-between gap-2 text-sm">
-            <span className="truncate">{name}</span>
-            <span className="tabular-nums text-muted-foreground">{n}</span>
-          </div>
-          <div className="h-2 rounded-full bg-muted">
-            <div
-              className={minority.has(name) ? "h-2 rounded-full bg-amber-500" : "h-2 rounded-full bg-primary"}
-              style={{ width: `${(n / largest) * 100}%` }}
-            />
-          </div>
-        </li>
-      ))}
-    </ul>
-  );
-}
 
 export default function FineTuningPage() {
   const liveStatus = useLiveStore((s) => s.pipelineStatus);
   const [baseModel, setBaseModel] = useState<string>("active");
-  const [upsample, setUpsample] = useState(false);
-  const [targetRatio, setTargetRatio] = useState<string>("1");
 
   const statusQuery = useQuery({
     queryKey: ["pipeline", "status"],
@@ -60,6 +21,8 @@ export default function FineTuningPage() {
     refetchInterval: 5000,
   });
   const versionsQuery = useQuery({ queryKey: ["models", "versions"], queryFn: modelsApi.list });
+  const upsamplingQuery = useQuery({ queryKey: ["upsampling", "status"], queryFn: upsamplingApi.status });
+  const upsampling = upsamplingQuery.data?.settings;
   // Calls the LLM, so only on demand
   const previewQuery = useQuery({
     queryKey: ["advisor-preview"],
@@ -78,17 +41,14 @@ export default function FineTuningPage() {
 
   const preview = previewQuery.data;
   const rec = preview?.recommendation;
-  const maxFactor = preview?.metadata.class_balance.max_factor ?? 3;
 
   const retrainMutation = useMutation({
     mutationFn: () =>
       pipelineApi.smartRetrain({
         base_model_path: baseModel === "active" ? null : baseModel,
-        upsample,
-        upsample_target_ratio: upsample ? Number(targetRatio) : null,
       }),
     onSuccess: () =>
-      toast.success(upsample ? "Fine-tuning started with class-balancing upsampling" : "Fine-tuning started"),
+      toast.success(upsampling?.enabled ? "Fine-tuning started with class-balancing upsampling" : "Fine-tuning started"),
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -133,52 +93,25 @@ export default function FineTuningPage() {
               </p>
             </div>
 
-            <div className="flex flex-col gap-2 rounded-lg border p-3">
-              <label htmlFor="upsample" className="flex items-start gap-2 text-sm font-medium">
-                <input
-                  id="upsample"
-                  type="checkbox"
-                  className="mt-0.5"
-                  checked={upsample}
-                  onChange={(e) => setUpsample(e.target.checked)}
-                />
-                <span className="flex flex-col gap-0.5">
-                  Upsample minority classes before training
-                  <span className="text-xs font-normal text-muted-foreground">
-                    Adds flipped, brightness- and noise-varied copies of training images that contain under-represented
-                    classes. The validation set is never changed.
-                  </span>
-                </span>
-              </label>
-              {upsample && (
-                <div className="flex flex-col gap-1.5 pl-6">
-                  <label className="text-xs text-muted-foreground">Bring smaller classes up to</label>
-                  <Select value={targetRatio} onValueChange={(value) => setTargetRatio(value ?? "1")}>
-                    <SelectTrigger className="w-full" size="sm">
-                      <SelectValue>{(value: string | null) => TARGET_LABELS[value ?? "1"]}</SelectValue>
-                    </SelectTrigger>
-                    <SelectContent>
-                      {Object.entries(TARGET_LABELS).map(([value, label]) => (
-                        <SelectItem key={value} value={value}>
-                          {label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <p className="text-xs text-muted-foreground">
-                    A class is never grown past {maxFactor}× its own size, so very small classes may stay below the
-                    target.
-                  </p>
-                </div>
-              )}
-              {!upsample && rec?.recommend_upsampling && (
-                <div className="flex items-center justify-between gap-2 pl-6 text-xs text-amber-600 dark:text-amber-400">
-                  <span>The advisor recommends upsampling for this dataset.</span>
-                  <Button size="sm" variant="outline" onClick={() => setUpsample(true)}>
-                    Turn on
-                  </Button>
-                </div>
-              )}
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3 text-sm">
+              <span>
+                Upsampling:{" "}
+                {upsampling ? (
+                  upsampling.enabled ? (
+                    <span className="font-medium">
+                      on, minorities up to {upsampling.target_ratio * 100}% of the largest class (max{" "}
+                      {upsampling.max_factor}×)
+                    </span>
+                  ) : (
+                    <span className="font-medium">off</span>
+                  )
+                ) : (
+                  "..."
+                )}
+              </span>
+              <a className="text-xs underline" href="/upsampling">
+                Configure on the Upsampling page
+              </a>
             </div>
 
             <Button disabled={retrainingRunning || retrainMutation.isPending} onClick={() => retrainMutation.mutate()}>
@@ -189,8 +122,8 @@ export default function FineTuningPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Dataset balance</CardTitle>
-            <CardDescription>Boxes per named class, and what the advisor recommends before you start.</CardDescription>
+            <CardTitle>Advisor preview</CardTitle>
+            <CardDescription>What the advisor would decide for the current named clusters, before you start.</CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
             <Button
@@ -207,23 +140,13 @@ export default function FineTuningPage() {
 
             {preview && rec && (
               <>
-                <ClassBars preview={preview} />
-
                 <div className="flex flex-wrap items-center gap-2 text-sm">
-                  <Badge variant="outline">{preview.metadata.class_balance.imbalance_ratio}× imbalance</Badge>
-                  <Badge variant={rec.recommend_upsampling ? "default" : "secondary"}>
-                    {rec.recommend_upsampling ? "Upsampling recommended" : "Upsampling not needed"}
-                  </Badge>
                   <Badge variant={rec.should_train ? "secondary" : "destructive"}>
                     {rec.should_train ? "Ready to train" : "Not ready to train"}
                   </Badge>
                 </div>
 
                 <dl className="flex flex-col gap-2 text-sm">
-                  <div>
-                    <dt className="text-xs text-muted-foreground">Class balance</dt>
-                    <dd>{rec.upsampling_reason}</dd>
-                  </div>
                   <div>
                     <dt className="text-xs text-muted-foreground">Training</dt>
                     <dd>{rec.reason}</dd>

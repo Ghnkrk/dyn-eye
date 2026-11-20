@@ -151,7 +151,7 @@ def trigger_retraining(
     batch_size: int | None = None,
     freeze: int | None = None,
     base_model_path: str | None = None,
-    upsample: bool = False,
+    upsample: bool | None = None,
     upsample_target_ratio: float | None = None,
 ) -> None:
     thread = threading.Thread(
@@ -169,7 +169,7 @@ def _run_retraining(
     batch_size: int | None,
     freeze: int | None,
     base_model_path: str | None = None,
-    upsample: bool = False,
+    upsample: bool | None = None,
     upsample_target_ratio: float | None = None,
 ) -> None:
     with _lock:

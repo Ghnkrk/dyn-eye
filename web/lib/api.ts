@@ -4,16 +4,22 @@
 // (same-origin from the browser's point of view, no CORS involved).
 import type {
   AdvisorPreview,
+  AttentionItem,
   ClusterManifest,
   ClustersResponse,
   DeploymentEvent,
   InferenceCompareResponse,
   ModelVersion,
   ModelVersionsResponse,
+  PipelineGraph,
   PipelineStatus,
   RunDetail,
   RunSummary,
   SystemConfig,
+  UpsamplingGroups,
+  UpsamplingResult,
+  UpsamplingSettings,
+  UpsamplingStatus,
 } from "./types";
 
 const BASE = "/api/v2";
@@ -78,10 +84,9 @@ export const pipelineApi = {
     batch_size?: number | null;
     freeze?: number | null;
     base_model_path?: string | null;
-    upsample?: boolean;
-    upsample_target_ratio?: number | null;
   }) => postJson<{ message: string; status: string }>("/pipeline/retraining/smart-trigger", body),
   advisorPreview: () => request<AdvisorPreview>("/pipeline/retraining/advisor-preview"),
+  graph: (kind: "discovery" | "retraining") => request<PipelineGraph>(`/pipeline/graph/${kind}`),
   startOrchestrator: (projectId?: number | null) =>
     postJson<{ message: string }>("/pipeline/orchestrator/start", { project_id: projectId ?? null }),
   stopOrchestrator: () => postJson<{ message: string }>("/pipeline/orchestrator/stop"),
@@ -137,6 +142,31 @@ export const modelsApi = {
   },
   remove: (versionId: string) =>
     request<{ success: boolean; error?: string }>(`/models/${encodeURIComponent(versionId)}`, { method: "DELETE" }),
+};
+
+// ── Attention ─────────────────────────────────────────────────
+
+export const attentionApi = {
+  list: () => request<{ items: AttentionItem[]; blocking: number }>("/attention"),
+  dismiss: (key: string, snoozeMinutes?: number) =>
+    postJson<{ ok: boolean }>("/attention/dismiss", { key, snooze_minutes: snoozeMinutes ?? null }),
+};
+
+// ── Upsampling ────────────────────────────────────────────────
+
+export const upsamplingApi = {
+  status: () => request<UpsamplingStatus>("/upsampling/status"),
+  saveSettings: (settings: UpsamplingSettings) =>
+    request<UpsamplingSettings>("/upsampling/settings", { method: "PUT", body: JSON.stringify(settings) }),
+  prepare: () => postJson<{ total_mapped: number; total_images: number; replay_images: number; external_images: number }>(
+    "/upsampling/prepare"
+  ),
+  preview: (settings: UpsamplingSettings) => postJson<UpsamplingResult>("/upsampling/preview", settings),
+  generate: (settings: UpsamplingSettings) => postJson<UpsamplingResult>("/upsampling/generate", settings),
+  clear: () => request<{ removed_files: number }>("/upsampling", { method: "DELETE" }),
+  groups: () => request<UpsamplingGroups>("/upsampling/groups"),
+  imageUrl: (name: string, version?: string | number) =>
+    `${BASE}/upsampling/image/${encodeURIComponent(name)}${version != null ? `?v=${version}` : ""}`,
 };
 
 // ── FAISS ─────────────────────────────────────────────────────

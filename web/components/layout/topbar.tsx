@@ -3,6 +3,7 @@
 import { Wifi, WifiOff } from "lucide-react";
 import { usePathname } from "next/navigation";
 
+import { AttentionBell, AttentionToasts } from "@/components/layout/attention";
 import { Badge } from "@/components/ui/badge";
 import { NAV_ITEMS } from "@/components/layout/nav-items";
 import { MobileNav } from "@/components/layout/mobile-nav";
@@ -52,6 +53,8 @@ export function Topbar() {
             Orchestrator: {status?.orchestrator.status ?? "idle"}
           </Badge>
         </div>
+        <AttentionBell />
+        <AttentionToasts />
         <ThemeToggle />
       </div>
     </header>

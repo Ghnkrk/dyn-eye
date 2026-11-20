@@ -200,3 +200,122 @@ export interface AdvisorPreview {
     upsampling_reason: string;
   };
 }
+
+// ── Upsampling ────────────────────────────────────────────────
+
+export interface UpsamplingTransforms {
+  hflip: boolean;
+  vflip: boolean;
+  rot180: boolean;
+  rot90: boolean;
+  contrast: boolean;
+  gamma: boolean;
+  blur: boolean;
+  noise: boolean;
+}
+
+export interface UpsamplingSettings {
+  enabled: boolean;
+  target_ratio: number;
+  max_factor: number;
+  imbalance_threshold: number;
+  seed: number;
+  transforms: UpsamplingTransforms;
+}
+
+export interface UpsamplingResult {
+  target_ratio: number;
+  max_factor: number;
+  imbalance_threshold: number;
+  transforms: UpsamplingTransforms;
+  seed: number;
+  dry_run: boolean;
+  before: Record<string, number>;
+  after: Record<string, number>;
+  generated_images: number;
+  minority_classes: string[];
+  classes_upsampled: string[];
+  capped_classes: string[];
+  limited_classes: string[];
+  note?: string;
+}
+
+export interface UpsamplingStatus {
+  dataset_ready: boolean;
+  class_names: string[];
+  train_images: number;
+  val_images: number;
+  origins: Record<string, number>;
+  counts: Record<string, number>;
+  counts_with_augmented: Record<string, number>;
+  augmented_images: number;
+  last_run: UpsamplingResult | null;
+  balance: ClassBalance;
+  recommendation: { recommend: boolean; reason: string };
+  settings: UpsamplingSettings;
+  defaults: UpsamplingSettings;
+}
+
+export interface UpsamplingBox {
+  class_id: number;
+  class_name: string;
+  xywhn: [number, number, number, number];
+}
+
+export interface UpsamplingAugmented {
+  image: string;
+  geometric: string;
+  photometric: string[];
+  for_class: string;
+  boxes: UpsamplingBox[];
+}
+
+export interface UpsamplingGroup {
+  source_image: string;
+  origin: string;
+  boxes: UpsamplingBox[];
+  for_classes: string[];
+  augmented: UpsamplingAugmented[];
+}
+
+export interface UpsamplingGroups {
+  classes: { class_name: string; originals: number; augmented: number; boxes_before: number; boxes_after: number }[];
+  groups: UpsamplingGroup[];
+}
+
+// ── Pipeline DAG (Overview graph) ─────────────────────────────
+
+export interface PipelineGraph {
+  kind: "discovery" | "retraining";
+  run_id: string | null;
+  run_status: PipelineRunStatus;
+  started_at: string | null;
+  error: string | null;
+  nodes: { id: string; label: string; gate: string | null }[];
+  steps: Record<
+    string,
+    {
+      status: "pending" | "running" | "success" | "failed";
+      start_time: string | null;
+      end_time: string | null;
+      latency_seconds: number;
+      items_processed: number;
+      items_failed: number;
+      metadata: Record<string, unknown>;
+      error: string | null;
+    }
+  >;
+}
+
+// ── Attention ("your input is needed") ────────────────────────
+
+export interface AttentionItem {
+  key: string;
+  severity: "blocking" | "recommended";
+  title: string;
+  detail: string;
+  href: string;
+  action: string;
+  since: string | null;
+  page: string;
+}

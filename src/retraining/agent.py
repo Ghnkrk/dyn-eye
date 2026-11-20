@@ -31,7 +31,7 @@ from src.utils.metrics import MetricsTracker
 from src.retraining.tools.dataset_validator import validate_yolo_dataset
 from src.retraining.tools.dvc_version import version_dataset
 from src.retraining.tools.train_yolo import train_yolo
-from src.retraining.tools.upsample import remove_augmented, upsample_dataset
+from src.retraining.tools.upsample import load_settings, remove_augmented, upsample_dataset
 from src.retraining.tools.mlflow_deploy import deploy_model
 from src.retraining.llm_advisor import get_training_recommendation, collect_dataset_metadata
 from src.retraining.model_registry import ModelRegistry
@@ -210,7 +210,9 @@ def llm_advisor_node(state: dict) -> dict:
         recommendation = get_training_recommendation(metadata)
 
         if _metrics:
-            _metrics.end_step("llm_advisor", items_processed=1)
+            _metrics.end_step("llm_advisor", items_processed=1,
+                              should_train=bool(recommendation.get("should_train", True)),
+                              reason=str(recommendation.get("reason", ""))[:500])
 
         log.info(
             f"LLM Advisor: should_train={recommendation['should_train']}, "
@@ -241,12 +243,15 @@ def upsample_node(state: dict) -> dict:
         _metrics.start_step("upsample_dataset")
 
     rec = state.get("llm_recommendation", {}) or {}
-    if not state.get("upsample"):
+    # Settings come from the Upsampling page; a request can still force it on/off.
+    settings = load_settings()
+    enabled = settings["enabled"] if state.get("upsample") is None else bool(state["upsample"])
+    if not enabled:
         if rec.get("recommend_upsampling"):
             LogStream.emit(
                 "[Upsampling] The advisor recommends upsampling minority classes "
                 f"({rec.get('upsampling_reason', '')}). Not applied because it is turned off; "
-                "enable it on the FineTuning page for the next run.",
+                "enable it on the Upsampling page for the next run.",
                 level="warning", source="upsample",
             )
         if _metrics:
@@ -262,7 +267,13 @@ def upsample_node(state: dict) -> dict:
 
     try:
         LogStream.emit("[Upsampling] Balancing classes in the training split...", level="step", source="upsample")
-        result = upsample_dataset(target_ratio=state.get("upsample_target_ratio"))
+        result = upsample_dataset(
+            target_ratio=state.get("upsample_target_ratio") or settings["target_ratio"],
+            max_factor=settings["max_factor"],
+            imbalance_threshold=settings["imbalance_threshold"],
+            transforms=settings["transforms"],
+            seed=settings["seed"],
+        )
         result["enabled"] = True
         capped = (
             f". Capped at {result['max_factor']:g}x their original count: {result['capped_classes']}"
@@ -601,7 +612,7 @@ def run_retraining_pipeline(
     batch_size: int | None = None,
     freeze: int | None = None,
     base_model_path: str | None = None,
-    upsample: bool = False,
+    upsample: bool | None = None,
     upsample_target_ratio: float | None = None,
 ) -> dict:
     """Run the retraining pipeline; refuses to start if one is already running."""
@@ -622,7 +633,7 @@ def _run_retraining_pipeline(
     batch_size: int | None = None,
     freeze: int | None = None,
     base_model_path: str | None = None,
-    upsample: bool = False,
+    upsample: bool | None = None,
     upsample_target_ratio: float | None = None,
 ) -> dict:
     """
@@ -635,7 +646,7 @@ def _run_retraining_pipeline(
         batch_size:      Training batch size override
         freeze:          Backbone freeze depth override (None = let LLM decide)
         base_model_path: Weights to fine-tune from (None = currently active model)
-        upsample:        Run the class-balancing upsampling stage before training
+        upsample:        Force upsampling on/off (None = use the Upsampling page settings)
         upsample_target_ratio: Fraction of the largest class to bring others up to
 
     Returns:

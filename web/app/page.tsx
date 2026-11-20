@@ -5,6 +5,7 @@ import { useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { LogPanel } from "@/components/dashboard/log-panel";
+import { PipelineGraph } from "@/components/dashboard/pipeline-graph";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -212,6 +213,8 @@ export default function OverviewPage() {
           </CardContent>
         </Card>
       </div>
+
+      <PipelineGraph />
 
       <LogPanel />
     </div>

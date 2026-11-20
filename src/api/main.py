@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.api.routers import clusters, faiss, images, inference, logs, models, pipeline, system, vlm
+from src.api.routers import attention, clusters, faiss, images, inference, logs, models, pipeline, system, upsampling, vlm
 from src.api.services.ws_manager import ws_manager
 from src.db.session import get_session, init_db
 from src.db import sync as db_sync
@@ -64,6 +64,8 @@ app.include_router(vlm.router)
 app.include_router(images.router)
 app.include_router(inference.router)
 app.include_router(logs.router)
+app.include_router(upsampling.router)
+app.include_router(attention.router)
 
 
 @app.get("/")

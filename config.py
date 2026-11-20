@@ -168,7 +168,7 @@ LLM_MIN_CROPS_PER_CLASS = 10   # Minimum crops per class before LLM considers tr
 # ============================================================
 # CLASS-BALANCING UPSAMPLING (opt-in stage just before training)
 # ============================================================
-UPSAMPLE_TARGET_RATIO = 1.0         # bring each class up to this fraction of the largest class
+UPSAMPLE_TARGET_RATIO = 0.5         # bring each minority class up to this fraction of the largest class
 UPSAMPLE_MAX_FACTOR = 3.0           # but never past N× its own original box count
 UPSAMPLE_ALLOW_ROTATE90 = False     # steel defects follow the rolling direction; flips only by default
 UPSAMPLE_SEED = 42                  # same dataset + settings → same augmented images

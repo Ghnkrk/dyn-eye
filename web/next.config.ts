@@ -49,6 +49,7 @@ const nextConfig: NextConfig = {
     // industrial inspection images. Raised generously since this is an
     // internal tool, not a public endpoint.
     proxyClientMaxBodySize: "2gb",
+    agentUpgrade: "security",
   },
 };
 
